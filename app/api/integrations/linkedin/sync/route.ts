@@ -2,7 +2,7 @@ import { env } from "cloudflare:workers";
 import { NextResponse } from "next/server";
 import { getLinkedInConnection } from "../../../../../lib/linkedin";
 import { decryptToken } from "../../../../../lib/token-crypto";
-import { getCurrentWorkspaceId, loadWorkspace, saveWorkspace } from "../../../../../lib/workspace";
+import { getCurrentWorkspaceId, loadWorkspace, logEvent, saveWorkspace } from "../../../../../lib/workspace";
 
 export const dynamic = "force-dynamic";
 
@@ -48,6 +48,7 @@ export async function POST() {
     }
   }
 
+  logEvent(data, "sync", `LinkedIn sync finished: ${syncedPosts} posts checked, ${importedContacts} new contact signals.`);
   await saveWorkspace(data, workspaceId);
   return NextResponse.json({ data, syncedPosts, importedContacts });
 }

@@ -57,7 +57,7 @@ export async function loadWorkspace(requestedWorkspaceId?: string): Promise<Work
 }
 
 function normalizeWorkspace(input: Partial<WorkspaceData>): WorkspaceData {
-  return {
+  const data: WorkspaceData = {
     workspace: { ...seedWorkspace.workspace, ...(input.workspace ?? {}) },
     brief: { ...seedWorkspace.brief, ...(input.brief ?? {}) },
     themes: input.themes ?? structuredClone(seedWorkspace.themes),
@@ -65,7 +65,21 @@ function normalizeWorkspace(input: Partial<WorkspaceData>): WorkspaceData {
     posts: input.posts ?? structuredClone(seedWorkspace.posts),
     contacts: input.contacts ?? structuredClone(seedWorkspace.contacts),
     sources: input.sources ?? structuredClone(seedWorkspace.sources),
+    events: input.events ?? [],
   };
+  // Migrate legacy display-string dates ("Mon · 9:10 AM") to the ISO-or-null contract.
+  for (const post of data.posts) {
+    if (post.scheduledFor !== null && !Number.isFinite(Date.parse(post.scheduledFor))) post.scheduledFor = null;
+  }
+  // Rejected posts are kept for 30 days, then cleaned up.
+  const cutoff = Date.now() - 30 * 24 * 60 * 60 * 1000;
+  data.posts = data.posts.filter(post => post.status !== "Rejected" || !post.rejectedAt || Date.parse(post.rejectedAt) > cutoff);
+  return data;
+}
+
+export function logEvent(data: WorkspaceData, kind: WorkspaceData["events"][number]["kind"], message: string, postId?: string) {
+  data.events.unshift({ id: crypto.randomUUID(), at: new Date().toISOString(), kind, message, postId, read: false });
+  if (data.events.length > 100) data.events.length = 100;
 }
 
 export async function saveWorkspace(data: WorkspaceData, requestedWorkspaceId?: string) {

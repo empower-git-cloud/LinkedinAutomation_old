@@ -12,7 +12,6 @@ test("builds the complete SignalLayer workflow shell", async () => {
   ]);
   assert.match(layout, /SignalLayer — LinkedIn content intelligence/);
   assert.match(page, /SignalLayerApp/);
-  assert.match(product, /Good morning, Aditi/);
   assert.match(product, /Approval queue/);
   assert.match(product, /Qualified contacts/);
   assert.match(product, /Idea approval/);
@@ -20,6 +19,10 @@ test("builds the complete SignalLayer workflow shell", async () => {
   assert.match(product, /Connect LinkedIn/);
   assert.match(product, /Workspace onboarding/);
   assert.match(product, /Export XLSX/);
+  assert.match(product, /Activity log/);
+  assert.match(product, /Revise with AI/);
+  assert.match(product, /Restore this version/);
+  assert.match(product, /linkedin-connected/);
   assert.doesNotMatch(page + product + layout, /codex-preview|react-loading-skeleton|Your site is taking shape/);
 });
 

@@ -30,7 +30,7 @@ export async function publishLinkedInPost(connection: LinkedInConnection, post: 
   if (connection.expiresAt <= Date.now()) throw new Error("LinkedIn authorization has expired. Reconnect the account.");
   const author = post.identity === "Founder" ? connection.memberUrn : connection.organizationUrn;
   if (!author) throw new Error("Select an eligible LinkedIn company page before publishing company content.");
-  if (post.format !== "Text") throw new Error(`${post.format} publishing needs an approved media asset. Upload or render the final asset before publishing.`);
+  if (post.format !== "Text") throw new Error(`${post.format} publishing is coming soon. Only text posts can publish to LinkedIn right now.`);
   const token = await decryptToken(connection.accessTokenEncrypted);
   const response = await fetch("https://api.linkedin.com/rest/posts", {
     method: "POST",

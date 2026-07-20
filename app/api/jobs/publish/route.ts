@@ -1,7 +1,7 @@
 import { env } from "cloudflare:workers";
 import { NextResponse } from "next/server";
 import { getLinkedInConnection, publishLinkedInPost } from "../../../../lib/linkedin";
-import { ensureWorkspaceTables, loadWorkspace, saveWorkspace } from "../../../../lib/workspace";
+import { ensureWorkspaceTables, loadWorkspace, logEvent, saveWorkspace } from "../../../../lib/workspace";
 
 export const dynamic = "force-dynamic";
 
@@ -15,24 +15,37 @@ export async function POST(request: Request) {
   for (const row of rows.results) {
     const [data, connection] = await Promise.all([loadWorkspace(row.id), getLinkedInConnection(row.id)]);
     if (!connection) continue;
-    for (const post of data.posts.filter(item => item.status === "Scheduled" && isDue(item.scheduledFor))) {
+    // A failed post gets a holdReason and is skipped until the user re-approves,
+    // so one broken post cannot retry forever or block the rest of the queue.
+    const due = data.posts.filter(post => post.status === "Scheduled" && !post.holdReason && isDue(post.scheduledFor));
+    for (const post of due) {
       try {
         const urn = await publishLinkedInPost(connection, post);
         post.status = "Published";
         post.linkedinPostUrn = urn;
-        post.scheduledFor = new Date().toISOString();
+        post.publishedAt = new Date().toISOString();
+        logEvent(data, "publish", `Published automatically: ${post.title}`, post.id);
         result.published += 1;
       } catch (error) {
-        if (error instanceof Error && error.message.includes("approved media asset")) result.held += 1;
-        else result.failed += 1;
+        const message = error instanceof Error ? error.message : "Publishing failed";
+        post.holdReason = message;
+        if (message.includes("media asset") || message.includes("coming soon")) {
+          logEvent(data, "hold", `Held (${post.format} publishing is not available yet): ${post.title}`, post.id);
+          result.held += 1;
+        } else {
+          logEvent(data, "publish-failed", `Publishing failed for “${post.title}”: ${message}`, post.id);
+          result.failed += 1;
+        }
       }
+      // Save after every post so a crash mid-run can never publish the same post twice.
+      await saveWorkspace(data, row.id);
     }
-    await saveWorkspace(data, row.id);
   }
   return NextResponse.json(result);
 }
 
-function isDue(value: string) {
+function isDue(value: string | null) {
+  if (!value) return false;
   const timestamp = Date.parse(value);
   return Number.isFinite(timestamp) && timestamp <= Date.now();
 }

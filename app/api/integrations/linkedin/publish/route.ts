@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { getLinkedInConnection, publishLinkedInPost } from "../../../../../lib/linkedin";
-import { getCurrentWorkspaceId, loadWorkspace, saveWorkspace } from "../../../../../lib/workspace";
+import { getCurrentWorkspaceId, loadWorkspace, logEvent, saveWorkspace } from "../../../../../lib/workspace";
 
 export const dynamic = "force-dynamic";
 
@@ -16,10 +16,15 @@ export async function POST(request: Request) {
     const urn = await publishLinkedInPost(connection, post);
     post.status = "Published";
     post.linkedinPostUrn = urn;
-    post.scheduledFor = new Date().toISOString();
+    post.publishedAt = new Date().toISOString();
+    delete post.holdReason;
+    logEvent(data, "publish", `Published now: ${post.title}`, post.id);
     await saveWorkspace(data, workspaceId);
     return NextResponse.json({ data, urn });
   } catch (error) {
-    return NextResponse.json({ error: error instanceof Error ? error.message : "Publishing failed" }, { status: 502 });
+    const message = error instanceof Error ? error.message : "Publishing failed";
+    logEvent(data, "publish-failed", `Publishing failed for “${post.title}”: ${message}`, post.id);
+    await saveWorkspace(data, workspaceId);
+    return NextResponse.json({ error: message }, { status: 502 });
   }
 }

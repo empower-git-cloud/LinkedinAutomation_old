@@ -20,6 +20,8 @@ export type Theme = {
   score: number;
   selected: boolean;
   evidence: string;
+  /** What is currently performing on LinkedIn that justifies this theme (Trend & Relevance signal). */
+  whatsWorking?: string;
   fit: Identity | "Both";
   color: string;
 };
@@ -85,9 +87,26 @@ export type KnowledgeSource = {
   textPreview?: string;
 };
 
+export type AccountType = "Business" | "Individual";
+export type BuildPeriod = 1 | 3 | 7;
+
+/** Individual (personal-brand) profile derived from a LinkedIn profile + optional manual notes. */
+export type IndividualProfile = {
+  linkedInUrl: string;
+  fullName: string;
+  headline: string;
+  role: string;
+  experienceSummary: string;
+  companies: string[];
+  manualInput: string;
+  analyzedAt: string | null;
+};
+
 export type WorkspaceData = {
   workspace: {
     name: string;
+    /** Which onboarding + strategy journey this workspace follows. */
+    accountType: AccountType;
     website: string;
     industry: string;
     timezone: string;
@@ -101,6 +120,8 @@ export type WorkspaceData = {
     strategyVersion: number;
     strategyApproved: boolean;
   };
+  /** Populated only for Individual workspaces. */
+  individual: IndividualProfile;
   brief: {
     positioning: string;
     audience: string;
@@ -164,9 +185,40 @@ export function sameLocalDay(iso: string | null | undefined, day: Date, timezone
   }
 }
 
+/** A brand-new signed-in user starts here: no demo content, onboarding not yet done. */
+export function emptyWorkspace(): WorkspaceData {
+  return {
+    workspace: {
+      name: "",
+      accountType: "Business",
+      website: "",
+      industry: "",
+      timezone: "UTC",
+      setupProgress: 10,
+      briefApproved: false,
+      linkedinMode: "Demo",
+      onboardingComplete: false,
+      primaryMarket: "",
+      founderLinkedInUrl: "",
+      companyLinkedInUrl: "",
+      strategyVersion: 1,
+      strategyApproved: false,
+    },
+    individual: { linkedInUrl: "", fullName: "", headline: "", role: "", experienceSummary: "", companies: [], manualInput: "", analyzedAt: null },
+    brief: { positioning: "", audience: "", founderVoice: "", companyVoice: "", proof: [], banned: [], preferredLanguage: "English", requiredVocabulary: [], founderExamples: [], version: 1, approvedAt: null },
+    themes: [],
+    ideas: [],
+    posts: [],
+    contacts: [],
+    sources: [],
+    events: [],
+  };
+}
+
 export const seedWorkspace: WorkspaceData = {
   workspace: {
     name: "Northstar Labs",
+    accountType: "Business",
     website: "northstarlabs.ai",
     industry: "B2B AI software",
     timezone: "Asia/Kolkata",
@@ -179,6 +231,16 @@ export const seedWorkspace: WorkspaceData = {
     companyLinkedInUrl: "https://www.linkedin.com/company/northstar-labs",
     strategyVersion: 3,
     strategyApproved: true,
+  },
+  individual: {
+    linkedInUrl: "",
+    fullName: "",
+    headline: "",
+    role: "",
+    experienceSummary: "",
+    companies: [],
+    manualInput: "",
+    analyzedAt: null,
   },
   brief: {
     positioning: "Northstar helps revenue teams turn scattered customer conversations into clear, actionable market intelligence.",

@@ -1,8 +1,11 @@
 import { env } from "cloudflare:workers";
-import { seedWorkspace, WorkspaceData } from "../app/data";
+import { emptyWorkspace, seedWorkspace, WorkspaceData } from "../app/data";
 import { getChatGPTUser } from "../app/chatgpt-auth";
+import { getSessionEmail } from "./auth";
 
 export async function getCurrentWorkspaceId() {
+  const sessionEmail = await getSessionEmail();
+  if (sessionEmail) return sessionEmail.toLowerCase();
   const user = await getChatGPTUser();
   return user?.email.toLowerCase() ?? "demo-workspace";
 }
@@ -42,7 +45,22 @@ export async function ensureWorkspaceTables() {
       expires_at INTEGER NOT NULL
     )`),
     db.prepare("CREATE INDEX IF NOT EXISTS oauth_states_expires_idx ON oauth_states(expires_at)"),
+    db.prepare(`CREATE TABLE IF NOT EXISTS users (
+      email TEXT PRIMARY KEY,
+      created_at INTEGER NOT NULL,
+      last_login_at INTEGER NOT NULL
+    )`),
   ]);
+}
+
+/** Upsert a user account on sign-in. Each email owns one workspace row. */
+export async function recordUser(email: string) {
+  await ensureWorkspaceTables();
+  const now = Date.now();
+  await env.DB.prepare(`INSERT INTO users (email, created_at, last_login_at) VALUES (?, ?, ?)
+    ON CONFLICT(email) DO UPDATE SET last_login_at = excluded.last_login_at`)
+    .bind(email.toLowerCase(), now, now)
+    .run();
 }
 
 export async function loadWorkspace(requestedWorkspaceId?: string): Promise<WorkspaceData> {
@@ -52,19 +70,23 @@ export async function loadWorkspace(requestedWorkspaceId?: string): Promise<Work
     .bind(workspaceId)
     .first<{ payload: string }>();
   if (row?.payload) return normalizeWorkspace(JSON.parse(row.payload) as Partial<WorkspaceData>);
-  await saveWorkspace(structuredClone(seedWorkspace), workspaceId);
-  return seedWorkspace;
+  // A new workspace starts empty — the user enters their own details in onboarding.
+  const fresh = emptyWorkspace();
+  await saveWorkspace(fresh, workspaceId);
+  return fresh;
 }
 
 function normalizeWorkspace(input: Partial<WorkspaceData>): WorkspaceData {
   const data: WorkspaceData = {
     workspace: { ...seedWorkspace.workspace, ...(input.workspace ?? {}) },
+    individual: { ...seedWorkspace.individual, ...(input.individual ?? {}) },
     brief: { ...seedWorkspace.brief, ...(input.brief ?? {}) },
-    themes: input.themes ?? structuredClone(seedWorkspace.themes),
-    ideas: input.ideas ?? structuredClone(seedWorkspace.ideas),
-    posts: input.posts ?? structuredClone(seedWorkspace.posts),
-    contacts: input.contacts ?? structuredClone(seedWorkspace.contacts),
-    sources: input.sources ?? structuredClone(seedWorkspace.sources),
+    // Empty-array fallbacks so legacy blobs never resurrect demo content.
+    themes: input.themes ?? [],
+    ideas: input.ideas ?? [],
+    posts: input.posts ?? [],
+    contacts: input.contacts ?? [],
+    sources: input.sources ?? [],
     events: input.events ?? [],
   };
   // Migrate legacy display-string dates ("Mon · 9:10 AM") to the ISO-or-null contract.

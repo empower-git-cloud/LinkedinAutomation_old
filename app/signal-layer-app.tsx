@@ -1,7 +1,7 @@
 "use client";
 
 import { ChangeEvent, FormEvent, useEffect, useState } from "react";
-import { ActivityEvent, Contact, Idea, Identity, Post, Theme, WorkspaceData, formatDateTime, formatTime, sameLocalDay, seedWorkspace } from "./data";
+import { ActivityEvent, Contact, Idea, Identity, Post, Theme, WorkspaceData, emptyWorkspace, formatDateTime, formatTime, sameLocalDay } from "./data";
 
 type Tab = "Overview" | "Strategy" | "Content" | "Calendar" | "Performance" | "Contacts" | "Knowledge" | "Settings";
 type ContentView = "Ideas" | "Drafts" | "Rejected";
@@ -71,7 +71,7 @@ function AppHeader({ title, onCreate, workspaceName, live, unread, openActivity 
   );
 }
 
-function Sidebar({ tab, setTab, setupProgress, userName, pendingPosts, newContacts }: { tab: Tab; setTab: (tab: Tab) => void; setupProgress: number; userName: string; pendingPosts: number; newContacts: number }) {
+function Sidebar({ tab, setTab, setupProgress, userName, pendingPosts, newContacts, onLogout }: { tab: Tab; setTab: (tab: Tab) => void; setupProgress: number; userName: string; pendingPosts: number; newContacts: number; onLogout: () => void }) {
   return (
     <aside className="sidebar">
       <button className="brand" onClick={() => setTab("Overview")} aria-label="Go to overview">
@@ -96,7 +96,8 @@ function Sidebar({ tab, setTab, setupProgress, userName, pendingPosts, newContac
       </div>
       <div className="profile-row">
         <span className="avatar">{userName.slice(0, 2).toUpperCase()}</span>
-        <span><b>{userName}</b><small>Founder workspace</small></span>
+        <span><b>{userName}</b><small>Signed in</small></span>
+        <button className="signout-button" onClick={onLogout} aria-label="Sign out">⎋</button>
       </div>
     </aside>
   );
@@ -206,26 +207,32 @@ function Overview({ data, setTab, approvePost, startOnboarding, timezone }: { da
   );
 }
 
-function Strategy({ data, toggleTheme, approveStrategy }: { data: WorkspaceData; toggleTheme: (id: string) => void; approveStrategy: () => void }) {
+function Strategy({ data, toggleTheme, approveStrategy, suggestThemes, buildPlan, suggestingThemes, building }: { data: WorkspaceData; toggleTheme: (id: string) => void; approveStrategy: () => void; suggestThemes: () => void; buildPlan: (days: 1 | 3 | 7) => void; suggestingThemes: boolean; building: boolean }) {
+  const [days, setDays] = useState<1 | 3 | 7>(3);
   const selected = data.themes.filter(t => t.selected);
+  const individual = data.workspace.accountType === "Individual";
+  const source = individual ? "your role and experience" : "your website and knowledge base";
   return (
     <div className="page-stack">
-      <section className="section-intro"><div><span className="section-kicker">Strategy version {data.workspace.strategyVersion} · {data.workspace.strategyApproved ? "approved" : "draft"}</span><h2>Your next two weeks, with reasons.</h2><p>Select the themes SignalLayer should turn into founder and company content.</p></div></section>
+      <section className="section-intro"><div><span className="section-kicker">Strategy version {data.workspace.strategyVersion} · {data.workspace.strategyApproved ? "approved" : "draft"} · {data.workspace.accountType}</span><h2>Themes built from {source}.</h2><p>SignalLayer analyses {source} and what is currently working on LinkedIn, then suggests themes. Pick one and build a plan.</p></div><button className="secondary-button" onClick={suggestThemes} disabled={suggestingThemes}>{suggestingThemes ? "Analysing…" : "✦ Suggest themes"}</button></section>
       <div className="strategy-layout">
         <section className="theme-grid">
           {data.themes.map(theme => <ThemeCard key={theme.id} theme={theme} toggleTheme={toggleTheme} />)}
+          {data.themes.length === 0 && <div className="panel empty-state"><b>No themes yet.</b><p>Click “Suggest themes” to analyse {source} and what’s working on LinkedIn.</p></div>}
         </section>
         <aside className="panel strategy-summary">
           <span className="section-kicker">Selected plan</span><h3>{selected.length} active theme{selected.length === 1 ? "" : "s"}</h3>
           <div className="mix-visual">{selected.map((t, i) => <span key={t.id} style={{ background: t.color, width: `${i === 0 ? 31 : 23}%` }} />)}</div>
           {selected.map(theme => <div className="theme-legend" key={theme.id}><i style={{ background: theme.color }} /><span>{theme.name}</span><b>{theme.fit}</b></div>)}
           <hr />
-          <h4>Recommended cadence</h4>
-          <div className="recommend-row"><IdentityBadge identity="Founder" /><span>3 posts / week</span></div>
-          <div className="recommend-row"><IdentityBadge identity="Company" /><span>2 posts / week</span></div>
+          <h4>Build a content plan</h4>
+          <p className="build-help">Choose how many days to build for the selected theme.</p>
+          <div className="period-grid">{([1, 3, 7] as const).map(option => <button key={option} className={days === option ? "active" : ""} onClick={() => setDays(option)}>{option} day{option > 1 ? "s" : ""}</button>)}</div>
+          {selected.length === 0 && <p className="strategy-hint">Select a theme to build content.</p>}
+          <button className="primary-button full" onClick={() => buildPlan(days)} disabled={selected.length === 0 || building}>{building ? "Building your plan…" : `Build ${days}-day plan`}</button>
+          <hr />
           {!data.workspace.strategyApproved && selected.length > 0 && <p className="strategy-hint">Theme changes reset approval. Re-approve to version your strategy.</p>}
-          {selected.length === 0 && <p className="strategy-hint">Select at least one theme to approve your strategy.</p>}
-          <button className="primary-button full" onClick={approveStrategy} disabled={selected.length === 0}>Approve this strategy</button>
+          <button className="secondary-button full" onClick={approveStrategy} disabled={selected.length === 0}>Approve this strategy</button>
         </aside>
       </div>
     </div>
@@ -240,7 +247,8 @@ function ThemeCard({ theme, toggleTheme }: { theme: Theme; toggleTheme: (id: str
       <IdentityBadge identity={theme.fit === "Company" ? "Company" : "Founder"} />
       {theme.fit === "Both" && <span className="both-label">+ company</span>}
       <h3>{theme.name}</h3><p>{theme.description}</p>
-      <div className="evidence"><b>Why now</b><span>{theme.evidence}</span></div>
+      {theme.whatsWorking && <div className="working-note"><b>↗ Working on LinkedIn</b><span>{theme.whatsWorking}</span></div>}
+      <div className="evidence"><b>Grounded in</b><span>{theme.evidence}</span></div>
     </article>
   );
 }
@@ -443,11 +451,41 @@ function ActivityDrawer({ open, close, events }: { open: boolean; close: () => v
 
 function OnboardingModal({ open, close, data, complete }: { open: boolean; close: () => void; data: WorkspaceData; complete: (payload: Record<string, unknown>) => void }) {
   const [step, setStep] = useState(1);
-  const [form, setForm] = useState({ name: data.workspace.name, website: data.workspace.website, industry: data.workspace.industry, primaryMarket: data.workspace.primaryMarket, timezone: data.workspace.timezone, founderLinkedInUrl: data.workspace.founderLinkedInUrl, companyLinkedInUrl: data.workspace.companyLinkedInUrl, positioning: data.brief.positioning, audience: data.brief.audience });
+  const [accountType, setAccountType] = useState<"Business" | "Individual">(data.workspace.accountType);
+  const [form, setForm] = useState({
+    name: data.workspace.name, website: data.workspace.website, industry: data.workspace.industry,
+    primaryMarket: data.workspace.primaryMarket, timezone: data.workspace.timezone,
+    founderLinkedInUrl: data.workspace.founderLinkedInUrl, companyLinkedInUrl: data.workspace.companyLinkedInUrl,
+    positioning: data.brief.positioning, audience: data.brief.audience,
+    linkedInUrl: data.individual.linkedInUrl, fullName: data.individual.fullName, headline: data.individual.headline,
+    role: data.individual.role, manualInput: data.individual.manualInput,
+  });
   if (!open) return null;
+  const individual = accountType === "Individual";
   const set = (key: keyof typeof form, value: string) => setForm(current => ({ ...current, [key]: value }));
-  const finish = () => { complete(form); setStep(1); close(); };
-  return <div className="drawer-backdrop onboarding-backdrop" onMouseDown={close}><section className="onboarding-modal" onMouseDown={e => e.stopPropagation()}><div className="onboarding-progress"><span style={{ width: `${step * 25}%` }} /></div><div className="drawer-head"><div><span className="section-kicker">Workspace onboarding · {step} of 4</span><h2>{step === 1 ? "Tell us about the business" : step === 2 ? "Add LinkedIn identities" : step === 3 ? "Confirm the extracted brief" : "Set operating preferences"}</h2></div><button onClick={close} aria-label="Close onboarding">×</button></div>{step === 1 && <div className="onboarding-form"><label>Company name<input value={form.name} onChange={e => set("name", e.target.value)} /></label><label>Website<input value={form.website} onChange={e => set("website", e.target.value)} /></label><div className="form-pair"><label>Industry<input value={form.industry} onChange={e => set("industry", e.target.value)} /></label><label>Primary market<input value={form.primaryMarket} onChange={e => set("primaryMarket", e.target.value)} /></label></div></div>}{step === 2 && <div className="onboarding-form"><label>Founder LinkedIn profile<input value={form.founderLinkedInUrl} onChange={e => set("founderLinkedInUrl", e.target.value)} placeholder="https://linkedin.com/in/..." /></label><label>Company LinkedIn page<input value={form.companyLinkedInUrl} onChange={e => set("companyLinkedInUrl", e.target.value)} placeholder="https://linkedin.com/company/..." /></label><div className="scan-note"><b>Permission note</b><p>Profile URLs add context only. Publishing and analytics require the official OAuth connection in Settings.</p></div></div>}{step === 3 && <div className="onboarding-form"><label>Positioning<textarea value={form.positioning} onChange={e => set("positioning", e.target.value)} /></label><label>Primary audience<textarea value={form.audience} onChange={e => set("audience", e.target.value)} /></label><div className="scan-note success"><b>Analyst check complete</b><p>Products, audience, proof and voice will remain editable and require Gate 1 approval.</p></div></div>}{step === 4 && <div className="onboarding-form"><label>Timezone<input value={form.timezone} onChange={e => set("timezone", e.target.value)} /></label><div className="preference-cards"><div><b>Founder cadence</b><span>3 posts / week</span></div><div><b>Company cadence</b><span>2 posts / week</span></div><div><b>Approval</b><span>Everything requires approval</span></div></div></div>}<div className="onboarding-actions"><button className="secondary-button" onClick={() => step === 1 ? close() : setStep(step - 1)}>{step === 1 ? "Skip for now" : "Back"}</button>{step < 4 ? <button className="primary-button compact" onClick={() => setStep(step + 1)}>Continue</button> : <button className="primary-button compact" onClick={finish}>Create workspace brief</button>}</div></section></div>;
+  const finish = () => { complete({ ...form, accountType }); setStep(1); close(); };
+  // Conditional required fields — Business needs a website, Individual needs a LinkedIn profile.
+  const canContinue = step !== 2 || (individual ? form.linkedInUrl.trim().length > 3 : form.website.trim().length > 2);
+  const titles = individual
+    ? ["Who is this for?", "Your LinkedIn profile", "Your role & experience", "Set operating preferences"]
+    : ["Who is this for?", "About the business", "Confirm the brief", "Set operating preferences"];
+  return <div className="drawer-backdrop onboarding-backdrop" onMouseDown={close}><section className="onboarding-modal" onMouseDown={e => e.stopPropagation()}><div className="onboarding-progress"><span style={{ width: `${step * 25}%` }} /></div><div className="drawer-head"><div><span className="section-kicker">Workspace onboarding · {step} of 4</span><h2>{titles[step - 1]}</h2></div><button onClick={close} aria-label="Close onboarding">×</button></div>
+
+    {step === 1 && <div className="onboarding-form"><p className="onboarding-lead">Who will be posting? This decides what we need from you.</p><div className="account-tabs"><button type="button" className={!individual ? "active" : ""} onClick={() => setAccountType("Business")}><b>Business</b><span>A company page. We need your website; LinkedIn and knowledge base are optional.</span></button><button type="button" className={individual ? "active" : ""} onClick={() => setAccountType("Individual")}><b>Individual</b><span>A personal brand. We need your LinkedIn profile; a website is not required.</span></button></div></div>}
+
+    {step === 2 && !individual && <div className="onboarding-form"><label>Company name<input value={form.name} onChange={e => set("name", e.target.value)} /></label><label>Website <em className="req">required</em><input value={form.website} onChange={e => set("website", e.target.value)} placeholder="https://yourcompany.com" /></label><div className="form-pair"><label>Industry<input value={form.industry} onChange={e => set("industry", e.target.value)} /></label><label>Primary market<input value={form.primaryMarket} onChange={e => set("primaryMarket", e.target.value)} /></label></div><label>Company LinkedIn page <em className="opt">optional</em><input value={form.companyLinkedInUrl} onChange={e => set("companyLinkedInUrl", e.target.value)} placeholder="https://linkedin.com/company/..." /></label><div className="scan-note"><b>Knowledge base is optional</b><p>Add product docs, case studies and brand guidelines on the Knowledge page any time to sharpen your themes.</p></div></div>}
+
+    {step === 2 && individual && <div className="onboarding-form"><label>LinkedIn profile <em className="req">required</em><input value={form.linkedInUrl} onChange={e => set("linkedInUrl", e.target.value)} placeholder="https://linkedin.com/in/your-name" /></label><label>Full name<input value={form.fullName} onChange={e => set("fullName", e.target.value)} /></label><label>Current headline / role<input value={form.headline} onChange={e => set("headline", e.target.value)} placeholder="e.g. Head of Product at Acme" /></label><label>Website <em className="opt">optional</em><input value={form.website} onChange={e => set("website", e.target.value)} placeholder="Not required for individuals" /></label><div className="scan-note"><b>We’ll read your role & experience</b><p>After you connect, SignalLayer analyses your profile to pick up your role and experience across companies. Nothing is scraped — connect LinkedIn in Settings to enrich it.</p></div></div>}
+
+    {step === 3 && !individual && <div className="onboarding-form"><label>Positioning<textarea value={form.positioning} onChange={e => set("positioning", e.target.value)} /></label><label>Primary audience<textarea value={form.audience} onChange={e => set("audience", e.target.value)} /></label><div className="scan-note success"><b>Themes come next</b><p>We research trending themes from your website and knowledge base, then suggest 4–5 on the Strategy page.</p></div></div>}
+
+    {step === 3 && individual && <div className="onboarding-form"><label>Your role<input value={form.role} onChange={e => set("role", e.target.value)} placeholder="e.g. Product leader, 10 years in fintech" /></label><label>Anything specific you want to post about? <em className="opt">optional</em><textarea value={form.manualInput} onChange={e => set("manualInput", e.target.value)} placeholder="Optional. Topics, a recent win, a lesson, an opinion you want to share…" /></label><div className="scan-note success"><b>Themes come next</b><p>We analyse your role, experience and what’s working on LinkedIn, then suggest 4–5 themes on the Strategy page.</p></div></div>}
+
+    {step === 4 && <div className="onboarding-form"><label>Timezone<input value={form.timezone} onChange={e => set("timezone", e.target.value)} /></label><div className="preference-cards"><div><b>Audience</b><span>{accountType}</span></div><div><b>Build periods</b><span>1 / 3 / 7 days</span></div><div><b>Approval</b><span>Everything requires approval</span></div></div></div>}
+
+    <div className="onboarding-actions"><button className="secondary-button" onClick={() => step === 1 ? close() : setStep(step - 1)}>{step === 1 ? "Skip for now" : "Back"}</button>{step < 4 ? <button className="primary-button compact" disabled={!canContinue} onClick={() => setStep(step + 1)}>Continue</button> : <button className="primary-button compact" onClick={finish}>Create workspace</button>}</div>
+    {step === 2 && !canContinue && <p className="onboarding-required">{individual ? "A LinkedIn profile is required to continue." : "A website is required to continue."}</p>}
+  </section></div>;
 }
 
 function EditPostDrawer({ post, close, save, timezone }: { post: Post | null; close: () => void; save: (id: string, changes: Partial<Post>, note?: string) => void; timezone: string }) {
@@ -480,7 +518,7 @@ function CreateDrawer({ open, close, createPost, themes, prefillDate }: { open: 
 }
 
 export function SignalLayerApp({ user }: { user: { name: string; email: string } | null }) {
-  const [data, setData] = useState<WorkspaceData>(seedWorkspace);
+  const [data, setData] = useState<WorkspaceData>(emptyWorkspace);
   const [tab, setTab] = useState<Tab>("Overview");
   const [contentView, setContentView] = useState<ContentView>("Ideas");
   const [drawer, setDrawer] = useState(false);
@@ -493,6 +531,8 @@ export function SignalLayerApp({ user }: { user: { name: string; email: string }
   const [generating, setGenerating] = useState(false);
   const [busyIdeas, setBusyIdeas] = useState<Set<string>>(new Set());
   const [revising, setRevising] = useState<Set<string>>(new Set());
+  const [suggestingThemes, setSuggestingThemes] = useState(false);
+  const [building, setBuilding] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
   // The LinkedIn sign-in outcome arrives as a ?integration= code in the address bar.
   const [banner, setBanner] = useState<Banner | null>(() => {
@@ -526,6 +566,15 @@ export function SignalLayerApp({ user }: { user: { name: string; email: string }
   const savePostEdit = (id: string, changes: Partial<Post>, note = "Manual edit") => { persist("updatePost", { id, changes, note }); notify("New post version saved."); };
   const toggleTheme = (id: string) => { setData(current => ({ ...current, workspace: { ...current.workspace, strategyApproved: false }, themes: current.themes.map(t => t.id === id ? { ...t, selected: !t.selected } : t) })); persist("toggleTheme", { id }); };
   const approveStrategy = () => { persist("approveStrategy", {}); notify("Strategy approved and versioned."); };
+  const suggestThemes = async () => { setSuggestingThemes(true); try {
+    // For individuals, analyse the profile first so themes are grounded in role + experience.
+    if (data.workspace.accountType === "Individual" && !data.individual.analyzedAt) {
+      await fetch("/api/agents/generate", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ mode: "analyzeProfile" }) });
+    }
+    const response = await fetch("/api/agents/generate", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ mode: "themes" }) });
+    const result = await response.json() as { data?: WorkspaceData; provider?: string; error?: string }; if (!response.ok || !result.data) throw new Error(result.error ?? "Theme suggestion failed"); setData(result.data); notify(`Themes suggested from your ${data.workspace.accountType === "Individual" ? "profile" : "business"} and what's working on LinkedIn (${result.provider}).`);
+  } catch (error) { notify(error instanceof Error ? error.message : "Theme suggestion failed."); } finally { setSuggestingThemes(false); } };
+  const buildPlan = async (days: 1 | 3 | 7) => { const theme = data.themes.find(t => t.selected); if (!theme) return notify("Select a theme first."); setBuilding(true); try { const response = await fetch("/api/agents/generate", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ mode: "buildPlan", themeId: theme.id, days }) }); const result = await response.json() as { data?: WorkspaceData; created?: number; provider?: string; error?: string }; if (!response.ok || !result.data) throw new Error(result.error ?? "Build failed"); setData(result.data); setContentView("Drafts"); setTab("Content"); notify(`Built ${result.created} posts for “${theme.name}” (${result.provider}). Review them under Finished drafts.`); } catch (error) { notify(error instanceof Error ? error.message : "Build failed."); } finally { setBuilding(false); } };
   const approveIdea = async (id: string) => { setBusyIdeas(current => new Set(current).add(id)); await persist("approveIdea", { id }); setBusyIdeas(current => { const next = new Set(current); next.delete(id); return next; }); setContentView("Drafts"); setTab("Content"); notify("Idea approved. The finished draft is under Finished drafts."); };
   const rejectIdea = (id: string) => { setData(current => ({ ...current, ideas: current.ideas.map(idea => idea.id === id ? { ...idea, status: "Rejected" as const } : idea) })); persist("rejectIdea", { id }); notify("Idea rejected. This feedback will inform the next batch."); };
   const generateIdeas = async () => { setGenerating(true); try { const response = await fetch("/api/agents/generate", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ mode: "ideas" }) }); const result = await response.json() as { data?: WorkspaceData; provider?: string; error?: string }; if (!response.ok || !result.data) throw new Error(result.error ?? "Generation failed"); setData(result.data); setContentView("Ideas"); notify(`Four ideas generated with ${result.provider}.`); } catch (error) { notify(error instanceof Error ? error.message : "Idea generation failed."); } finally { setGenerating(false); } };
@@ -535,11 +584,12 @@ export function SignalLayerApp({ user }: { user: { name: string; email: string }
   const deleteSource = (id: string) => { persist("deleteSource", { id }); notify("Source removed. The AI stops using it immediately."); };
   const saveBrief = (brief: WorkspaceData["brief"]) => { persist("saveBrief", brief); notify("Brief saved as a new version. Approval is required before production."); };
   const approveBrief = () => { persist("approveBrief", {}); notify("Business & Voice Brief approved."); };
-  const completeOnboarding = (payload: Record<string, unknown>) => { persist("completeOnboarding", payload); setTab("Knowledge"); notify("Business context updated. Review and approve the new brief."); };
+  const completeOnboarding = (payload: Record<string, unknown>) => { persist("completeOnboarding", payload); setTab("Strategy"); notify(payload.accountType === "Individual" ? "Profile saved. Suggest themes to get started." : "Business saved. Suggest themes to get started."); };
   const configureOrganization = async (organizationUrn: string) => { const response = await fetch("/api/integrations/linkedin", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ organizationUrn }) }); const result = await response.json() as IntegrationStatus & { error?: string }; if (!response.ok) return notify(result.error ?? "Company page could not be saved."); setIntegration(result); notify("Company publishing identity saved."); };
   const syncLinkedIn = async () => { try { const response = await fetch("/api/integrations/linkedin/sync", { method: "POST" }); const result = await response.json() as { data?: WorkspaceData; syncedPosts?: number; importedContacts?: number; error?: string }; if (!response.ok || !result.data) throw new Error(result.error ?? "Sync failed"); setData(result.data); await refreshIntegration(); notify(`Synced ${result.syncedPosts} posts and found ${result.importedContacts} new contact signals.`); } catch (error) { notify(error instanceof Error ? error.message : "LinkedIn sync failed."); } };
   const publishPost = async (postId: string) => { try { const response = await fetch("/api/integrations/linkedin/publish", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ postId }) }); const result = await response.json() as { data?: WorkspaceData; error?: string }; if (!response.ok || !result.data) throw new Error(result.error ?? "Publishing failed"); setData(result.data); notify("Post published to LinkedIn."); } catch (error) { notify(error instanceof Error ? error.message : "Publishing failed."); setTab("Settings"); } };
   const openActivity = () => { setActivityOpen(true); if (data.events.some(event => !event.read)) persist("markEventsRead", {}); };
+  const logout = async () => { try { await fetch("/api/auth/logout", { method: "POST" }); } finally { window.location.href = "/"; } };
   const addSlot = (day: Date) => { const slot = new Date(day); slot.setHours(9, 0, 0, 0); const pad = (part: number) => String(part).padStart(2, "0"); setPrefillDate(`${slot.getFullYear()}-${pad(slot.getMonth() + 1)}-${pad(slot.getDate())}T09:00`); setDrawer(true); };
 
   const pendingPosts = data.posts.filter(post => post.status === "Needs approval").length;
@@ -548,7 +598,7 @@ export function SignalLayerApp({ user }: { user: { name: string; email: string }
 
   const current = (() => {
     if (tab === "Overview") return <Overview data={data} setTab={setTab} approvePost={approvePost} startOnboarding={() => setOnboarding(true)} timezone={timezone} />;
-    if (tab === "Strategy") return <Strategy data={data} toggleTheme={toggleTheme} approveStrategy={approveStrategy} />;
+    if (tab === "Strategy") return <Strategy data={data} toggleTheme={toggleTheme} approveStrategy={approveStrategy} suggestThemes={suggestThemes} buildPlan={buildPlan} suggestingThemes={suggestingThemes} building={building} />;
     if (tab === "Content") return <Content data={data} view={contentView} setView={setContentView} approvePost={approvePost} requestRevision={requestRevision} reviseWithAi={reviseWithAi} backToReview={backToReview} rejectPost={rejectPost} restorePost={restorePost} approveIdea={approveIdea} rejectIdea={rejectIdea} generateIdeas={generateIdeas} editPost={setEditingPost} publishPost={publishPost} schedulePost={schedulePost} generating={generating} busyIdeas={busyIdeas} revising={revising} timezone={timezone} />;
     if (tab === "Calendar") return <Calendar data={data} approvePost={approvePost} schedulePost={schedulePost} addSlot={addSlot} timezone={timezone} />;
     if (tab === "Performance") return <Performance data={data} timezone={timezone} />;
@@ -558,7 +608,7 @@ export function SignalLayerApp({ user }: { user: { name: string; email: string }
   })();
 
   return <div className={`app-shell ${loaded ? "loaded" : ""}`}>
-    <Sidebar tab={tab} setTab={setTab} setupProgress={data.workspace.setupProgress} userName={userName} pendingPosts={pendingPosts} newContacts={newContacts} />
+    <Sidebar tab={tab} setTab={setTab} setupProgress={data.workspace.setupProgress} userName={userName} pendingPosts={pendingPosts} newContacts={newContacts} onLogout={logout} />
     <main>
       <AppHeader title={tab} onCreate={() => { setPrefillDate(null); setDrawer(true); }} workspaceName={data.workspace.name} live={Boolean(integration?.connected)} unread={unreadEvents} openActivity={openActivity} />
       {loaded && banner && <div className={`banner banner-${banner.tone}`}><p>{banner.message}</p><button onClick={() => setBanner(null)} aria-label="Dismiss">×</button></div>}

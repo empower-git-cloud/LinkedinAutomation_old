@@ -20,6 +20,8 @@ export type Theme = {
   score: number;
   selected: boolean;
   evidence: string;
+  /** What is currently performing on LinkedIn that justifies this theme (Trend & Relevance signal). */
+  whatsWorking?: string;
   fit: Identity | "Both";
   color: string;
 };
@@ -85,9 +87,26 @@ export type KnowledgeSource = {
   textPreview?: string;
 };
 
+export type AccountType = "Business" | "Individual";
+export type BuildPeriod = 1 | 3 | 7;
+
+/** Individual (personal-brand) profile derived from a LinkedIn profile + optional manual notes. */
+export type IndividualProfile = {
+  linkedInUrl: string;
+  fullName: string;
+  headline: string;
+  role: string;
+  experienceSummary: string;
+  companies: string[];
+  manualInput: string;
+  analyzedAt: string | null;
+};
+
 export type WorkspaceData = {
   workspace: {
     name: string;
+    /** Which onboarding + strategy journey this workspace follows. */
+    accountType: AccountType;
     website: string;
     industry: string;
     timezone: string;
@@ -101,6 +120,8 @@ export type WorkspaceData = {
     strategyVersion: number;
     strategyApproved: boolean;
   };
+  /** Populated only for Individual workspaces. */
+  individual: IndividualProfile;
   brief: {
     positioning: string;
     audience: string;
@@ -167,6 +188,7 @@ export function sameLocalDay(iso: string | null | undefined, day: Date, timezone
 export const seedWorkspace: WorkspaceData = {
   workspace: {
     name: "Northstar Labs",
+    accountType: "Business",
     website: "northstarlabs.ai",
     industry: "B2B AI software",
     timezone: "Asia/Kolkata",
@@ -179,6 +201,16 @@ export const seedWorkspace: WorkspaceData = {
     companyLinkedInUrl: "https://www.linkedin.com/company/northstar-labs",
     strategyVersion: 3,
     strategyApproved: true,
+  },
+  individual: {
+    linkedInUrl: "",
+    fullName: "",
+    headline: "",
+    role: "",
+    experienceSummary: "",
+    companies: [],
+    manualInput: "",
+    analyzedAt: null,
   },
   brief: {
     positioning: "Northstar helps revenue teams turn scattered customer conversations into clear, actionable market intelligence.",

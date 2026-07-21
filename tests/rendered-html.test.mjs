@@ -23,6 +23,10 @@ test("builds the complete SignalLayer workflow shell", async () => {
   assert.match(product, /Revise with AI/);
   assert.match(product, /Restore this version/);
   assert.match(product, /linkedin-connected/);
+  assert.match(product, /Who is this for/);
+  assert.match(product, /Suggest themes/);
+  assert.match(product, /Build \$\{days\}-day plan|day plan/);
+  assert.match(product, /Working on LinkedIn/);
   assert.doesNotMatch(page + product + layout, /codex-preview|react-loading-skeleton|Your site is taking shape/);
 });
 

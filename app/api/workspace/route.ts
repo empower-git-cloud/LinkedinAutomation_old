@@ -132,10 +132,37 @@ export async function POST(request: Request) {
       data.workspace.briefApproved = true;
       data.brief.approvedAt = new Date().toISOString();
       break;
+    case "setAccountType": {
+      const type = payload.accountType === "Individual" ? "Individual" : "Business";
+      data.workspace.accountType = type;
+      break;
+    }
+    case "saveProfile": {
+      const form = payload as Record<string, unknown>;
+      data.individual = {
+        ...data.individual,
+        linkedInUrl: asText(form.linkedInUrl, data.individual.linkedInUrl).slice(0, 300),
+        fullName: asText(form.fullName, data.individual.fullName).slice(0, 120),
+        headline: asText(form.headline, data.individual.headline).slice(0, 300),
+        role: asText(form.role, data.individual.role).slice(0, 200),
+        experienceSummary: asText(form.experienceSummary, data.individual.experienceSummary).slice(0, 1000),
+        manualInput: asText(form.manualInput, data.individual.manualInput).slice(0, 2000),
+      };
+      break;
+    }
     case "completeOnboarding": {
       const form = payload as Record<string, unknown>;
+      const type = form.accountType === "Individual" ? "Individual" : form.accountType === "Business" ? "Business" : data.workspace.accountType;
+      // Conditional required fields — the core of the two-audience journey.
+      if (type === "Business" && !asText(form.website, data.workspace.website).trim()) {
+        return NextResponse.json({ error: "A website is required for business workspaces." }, { status: 400 });
+      }
+      if (type === "Individual" && !asText(form.linkedInUrl, data.individual.linkedInUrl).trim()) {
+        return NextResponse.json({ error: "A LinkedIn profile is required for individual workspaces." }, { status: 400 });
+      }
       data.workspace = {
         ...data.workspace,
+        accountType: type,
         name: asText(form.name, data.workspace.name).slice(0, 120),
         website: asText(form.website, data.workspace.website).slice(0, 300),
         industry: asText(form.industry, data.workspace.industry).slice(0, 120),
@@ -147,6 +174,16 @@ export async function POST(request: Request) {
         setupProgress: 88,
         briefApproved: false,
       };
+      if (type === "Individual") {
+        data.individual = {
+          ...data.individual,
+          linkedInUrl: asText(form.linkedInUrl, data.individual.linkedInUrl).slice(0, 300),
+          fullName: asText(form.fullName, data.individual.fullName).slice(0, 120),
+          headline: asText(form.headline, data.individual.headline).slice(0, 300),
+          role: asText(form.role, data.individual.role).slice(0, 200),
+          manualInput: asText(form.manualInput, data.individual.manualInput).slice(0, 2000),
+        };
+      }
       data.brief = { ...data.brief, positioning: asText(form.positioning, data.brief.positioning), audience: asText(form.audience, data.brief.audience), approvedAt: null, version: data.brief.version + 1 };
       break;
     }

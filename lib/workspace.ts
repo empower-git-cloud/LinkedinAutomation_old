@@ -59,6 +59,7 @@ export async function loadWorkspace(requestedWorkspaceId?: string): Promise<Work
 function normalizeWorkspace(input: Partial<WorkspaceData>): WorkspaceData {
   const data: WorkspaceData = {
     workspace: { ...seedWorkspace.workspace, ...(input.workspace ?? {}) },
+    individual: { ...seedWorkspace.individual, ...(input.individual ?? {}) },
     brief: { ...seedWorkspace.brief, ...(input.brief ?? {}) },
     themes: input.themes ?? structuredClone(seedWorkspace.themes),
     ideas: input.ideas ?? structuredClone(seedWorkspace.ideas),

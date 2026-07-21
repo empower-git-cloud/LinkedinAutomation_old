@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { getLinkedInConnection } from "../../../../../lib/linkedin";
 import { decryptToken } from "../../../../../lib/token-crypto";
 import { getCurrentWorkspaceId, loadWorkspace, logEvent, saveWorkspace } from "../../../../../lib/workspace";
+import { classifyComments } from "../../../../../lib/sentiment";
 
 export const dynamic = "force-dynamic";
 
@@ -33,14 +34,18 @@ export async function POST() {
       const commentsResponse = await linkedinFetch(commentsUrl, token);
       if (commentsResponse.ok) {
         const result = await commentsResponse.json() as { elements?: { id?: string; actor?: string; message?: { text?: string }; created?: { time?: number } }[] };
-        for (const comment of result.elements ?? []) {
-          const text = comment.message?.text?.trim() ?? "";
-          const signal = classifyComment(text);
-          if (!text || !signal || data.contacts.some(contact => contact.id === `li-${comment.id}`)) continue;
+        // Only new comments, then classify the whole batch in one LLM pass.
+        const fresh = (result.elements ?? []).filter(comment => (comment.message?.text?.trim() ?? "") && !data.contacts.some(contact => contact.id === `li-${comment.id}`));
+        const signals = await classifyComments(fresh.map(comment => comment.message!.text!.trim()));
+        fresh.forEach((comment, index) => {
+          const signal = signals[index];
+          // Only genuine buying/question signals become suggested contacts; supportive/neutral stay out of the lead list.
+          if (!signal?.isLead) return;
+          const text = comment.message!.text!.trim();
           const actor = comment.actor ?? "LinkedIn member";
           data.contacts.unshift({ id: `li-${comment.id ?? crypto.randomUUID()}`, name: actor.startsWith("urn:") ? "LinkedIn member" : actor, role: "From LinkedIn comment", company: "", comment: text, intent: signal.intent, sentiment: signal.sentiment, stage: "New", source: post.title, initials: "LI", notes: actor });
           importedContacts += 1;
-        }
+        });
       }
       syncedPosts += 1;
     } catch {
@@ -55,12 +60,4 @@ export async function POST() {
 
 function linkedinFetch(input: string | URL, token: string) {
   return fetch(input, { headers: { authorization: `Bearer ${token}`, "Linkedin-Version": env.LINKEDIN_API_VERSION ?? "202606", "X-Restli-Protocol-Version": "2.0.0" } });
-}
-
-function classifyComment(text: string): { intent: "High" | "Medium"; sentiment: "Interested" | "Question" } | null {
-  const normalized = text.toLowerCase();
-  const high = ["demo", "pricing", "buy", "trial", "workflow", "can we talk", "interested", "how do i get"];
-  if (high.some(term => normalized.includes(term))) return { intent: "High", sentiment: "Interested" };
-  if (normalized.includes("?") || /\bhow\b|\bwhat\b|\bwhere\b|\bwhen\b/.test(normalized)) return { intent: "Medium", sentiment: "Question" };
-  return null;
 }

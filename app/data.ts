@@ -46,7 +46,7 @@ export type Post = {
   hook?: string;
   cta?: string;
   altText?: string;
-  qa?: { voice: boolean; claims: boolean; duplication: boolean; links: boolean };
+  qa?: { voice: boolean; claims: boolean; duplication: boolean; links: boolean; format: boolean };
   qaNotes?: string[];
   versions?: { id: string; body: string; note: string; createdAt: string }[];
   creativeSlides?: { heading: string; copy: string }[];
@@ -98,8 +98,12 @@ export type IndividualProfile = {
   role: string;
   experienceSummary: string;
   companies: string[];
+  /** Pasted profile/resume text the user provides so we can extract role + experience without scraping. */
+  rawProfile: string;
   manualInput: string;
   analyzedAt: string | null;
+  /** How the profile was analysed: provider enrichment, LLM from pasted text, or manual. */
+  analyzedVia?: "provider" | "ai" | "manual";
 };
 
 export type WorkspaceData = {
@@ -204,7 +208,7 @@ export function emptyWorkspace(): WorkspaceData {
       strategyVersion: 1,
       strategyApproved: false,
     },
-    individual: { linkedInUrl: "", fullName: "", headline: "", role: "", experienceSummary: "", companies: [], manualInput: "", analyzedAt: null },
+    individual: { linkedInUrl: "", fullName: "", headline: "", role: "", experienceSummary: "", companies: [], rawProfile: "", manualInput: "", analyzedAt: null },
     brief: { positioning: "", audience: "", founderVoice: "", companyVoice: "", proof: [], banned: [], preferredLanguage: "English", requiredVocabulary: [], founderExamples: [], version: 1, approvedAt: null },
     themes: [],
     ideas: [],
@@ -239,6 +243,7 @@ export const seedWorkspace: WorkspaceData = {
     role: "",
     experienceSummary: "",
     companies: [],
+    rawProfile: "",
     manualInput: "",
     analyzedAt: null,
   },

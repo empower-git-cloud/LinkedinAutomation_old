@@ -146,6 +146,7 @@ export async function POST(request: Request) {
         headline: asText(form.headline, data.individual.headline).slice(0, 300),
         role: asText(form.role, data.individual.role).slice(0, 200),
         experienceSummary: asText(form.experienceSummary, data.individual.experienceSummary).slice(0, 1000),
+        rawProfile: asText(form.rawProfile, data.individual.rawProfile).slice(0, 8000),
         manualInput: asText(form.manualInput, data.individual.manualInput).slice(0, 2000),
       };
       break;
@@ -181,6 +182,7 @@ export async function POST(request: Request) {
           fullName: asText(form.fullName, data.individual.fullName).slice(0, 120),
           headline: asText(form.headline, data.individual.headline).slice(0, 300),
           role: asText(form.role, data.individual.role).slice(0, 200),
+          rawProfile: asText(form.rawProfile, data.individual.rawProfile).slice(0, 8000),
           manualInput: asText(form.manualInput, data.individual.manualInput).slice(0, 2000),
         };
       }

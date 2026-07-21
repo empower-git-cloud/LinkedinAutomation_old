@@ -1,7 +1,7 @@
 "use client";
 
 import { ChangeEvent, FormEvent, useEffect, useState } from "react";
-import { ActivityEvent, Contact, Idea, Identity, Post, Theme, WorkspaceData, formatDateTime, formatTime, sameLocalDay, seedWorkspace } from "./data";
+import { ActivityEvent, Contact, Idea, Identity, Post, Theme, WorkspaceData, emptyWorkspace, formatDateTime, formatTime, sameLocalDay } from "./data";
 
 type Tab = "Overview" | "Strategy" | "Content" | "Calendar" | "Performance" | "Contacts" | "Knowledge" | "Settings";
 type ContentView = "Ideas" | "Drafts" | "Rejected";
@@ -71,7 +71,7 @@ function AppHeader({ title, onCreate, workspaceName, live, unread, openActivity 
   );
 }
 
-function Sidebar({ tab, setTab, setupProgress, userName, pendingPosts, newContacts }: { tab: Tab; setTab: (tab: Tab) => void; setupProgress: number; userName: string; pendingPosts: number; newContacts: number }) {
+function Sidebar({ tab, setTab, setupProgress, userName, pendingPosts, newContacts, onLogout }: { tab: Tab; setTab: (tab: Tab) => void; setupProgress: number; userName: string; pendingPosts: number; newContacts: number; onLogout: () => void }) {
   return (
     <aside className="sidebar">
       <button className="brand" onClick={() => setTab("Overview")} aria-label="Go to overview">
@@ -96,7 +96,8 @@ function Sidebar({ tab, setTab, setupProgress, userName, pendingPosts, newContac
       </div>
       <div className="profile-row">
         <span className="avatar">{userName.slice(0, 2).toUpperCase()}</span>
-        <span><b>{userName}</b><small>Founder workspace</small></span>
+        <span><b>{userName}</b><small>Signed in</small></span>
+        <button className="signout-button" onClick={onLogout} aria-label="Sign out">⎋</button>
       </div>
     </aside>
   );
@@ -517,7 +518,7 @@ function CreateDrawer({ open, close, createPost, themes, prefillDate }: { open: 
 }
 
 export function SignalLayerApp({ user }: { user: { name: string; email: string } | null }) {
-  const [data, setData] = useState<WorkspaceData>(seedWorkspace);
+  const [data, setData] = useState<WorkspaceData>(emptyWorkspace);
   const [tab, setTab] = useState<Tab>("Overview");
   const [contentView, setContentView] = useState<ContentView>("Ideas");
   const [drawer, setDrawer] = useState(false);
@@ -588,6 +589,7 @@ export function SignalLayerApp({ user }: { user: { name: string; email: string }
   const syncLinkedIn = async () => { try { const response = await fetch("/api/integrations/linkedin/sync", { method: "POST" }); const result = await response.json() as { data?: WorkspaceData; syncedPosts?: number; importedContacts?: number; error?: string }; if (!response.ok || !result.data) throw new Error(result.error ?? "Sync failed"); setData(result.data); await refreshIntegration(); notify(`Synced ${result.syncedPosts} posts and found ${result.importedContacts} new contact signals.`); } catch (error) { notify(error instanceof Error ? error.message : "LinkedIn sync failed."); } };
   const publishPost = async (postId: string) => { try { const response = await fetch("/api/integrations/linkedin/publish", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ postId }) }); const result = await response.json() as { data?: WorkspaceData; error?: string }; if (!response.ok || !result.data) throw new Error(result.error ?? "Publishing failed"); setData(result.data); notify("Post published to LinkedIn."); } catch (error) { notify(error instanceof Error ? error.message : "Publishing failed."); setTab("Settings"); } };
   const openActivity = () => { setActivityOpen(true); if (data.events.some(event => !event.read)) persist("markEventsRead", {}); };
+  const logout = async () => { try { await fetch("/api/auth/logout", { method: "POST" }); } finally { window.location.href = "/"; } };
   const addSlot = (day: Date) => { const slot = new Date(day); slot.setHours(9, 0, 0, 0); const pad = (part: number) => String(part).padStart(2, "0"); setPrefillDate(`${slot.getFullYear()}-${pad(slot.getMonth() + 1)}-${pad(slot.getDate())}T09:00`); setDrawer(true); };
 
   const pendingPosts = data.posts.filter(post => post.status === "Needs approval").length;
@@ -606,7 +608,7 @@ export function SignalLayerApp({ user }: { user: { name: string; email: string }
   })();
 
   return <div className={`app-shell ${loaded ? "loaded" : ""}`}>
-    <Sidebar tab={tab} setTab={setTab} setupProgress={data.workspace.setupProgress} userName={userName} pendingPosts={pendingPosts} newContacts={newContacts} />
+    <Sidebar tab={tab} setTab={setTab} setupProgress={data.workspace.setupProgress} userName={userName} pendingPosts={pendingPosts} newContacts={newContacts} onLogout={logout} />
     <main>
       <AppHeader title={tab} onCreate={() => { setPrefillDate(null); setDrawer(true); }} workspaceName={data.workspace.name} live={Boolean(integration?.connected)} unread={unreadEvents} openActivity={openActivity} />
       {loaded && banner && <div className={`banner banner-${banner.tone}`}><p>{banner.message}</p><button onClick={() => setBanner(null)} aria-label="Dismiss">×</button></div>}

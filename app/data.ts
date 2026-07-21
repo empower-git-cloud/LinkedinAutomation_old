@@ -185,6 +185,36 @@ export function sameLocalDay(iso: string | null | undefined, day: Date, timezone
   }
 }
 
+/** A brand-new signed-in user starts here: no demo content, onboarding not yet done. */
+export function emptyWorkspace(): WorkspaceData {
+  return {
+    workspace: {
+      name: "",
+      accountType: "Business",
+      website: "",
+      industry: "",
+      timezone: "UTC",
+      setupProgress: 10,
+      briefApproved: false,
+      linkedinMode: "Demo",
+      onboardingComplete: false,
+      primaryMarket: "",
+      founderLinkedInUrl: "",
+      companyLinkedInUrl: "",
+      strategyVersion: 1,
+      strategyApproved: false,
+    },
+    individual: { linkedInUrl: "", fullName: "", headline: "", role: "", experienceSummary: "", companies: [], manualInput: "", analyzedAt: null },
+    brief: { positioning: "", audience: "", founderVoice: "", companyVoice: "", proof: [], banned: [], preferredLanguage: "English", requiredVocabulary: [], founderExamples: [], version: 1, approvedAt: null },
+    themes: [],
+    ideas: [],
+    posts: [],
+    contacts: [],
+    sources: [],
+    events: [],
+  };
+}
+
 export const seedWorkspace: WorkspaceData = {
   workspace: {
     name: "Northstar Labs",

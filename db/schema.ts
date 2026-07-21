@@ -33,3 +33,9 @@ export const oauthStates = sqliteTable("oauth_states", {
   workspaceId: text("workspace_id").notNull(),
   expiresAt: integer("expires_at").notNull(),
 });
+
+export const users = sqliteTable("users", {
+  email: text("email").primaryKey(),
+  createdAt: integer("created_at").notNull(),
+  lastLoginAt: integer("last_login_at").notNull(),
+});

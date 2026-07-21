@@ -1,4 +1,4 @@
-import { env } from "cloudflare:workers";
+import { llmComplete, llmConfigured } from "../../../../lib/llm";
 import { NextResponse } from "next/server";
 import { BuildPeriod, Idea, Post, Theme, WorkspaceData } from "../../../data";
 import { loadWorkspace, logEvent, saveWorkspace } from "../../../../lib/workspace";
@@ -30,7 +30,7 @@ export async function POST(request: Request) {
 
   let generated: Idea[];
   let provider: "OpenAI" | "Built-in fallback" = "Built-in fallback";
-  if (env.OPENAI_API_KEY) {
+  if (llmConfigured()) {
     try { generated = await generateIdeasWithOpenAI(data, themeName); provider = "OpenAI"; }
     catch { generated = fallbackIdeas(data, themeName); }
   } else {
@@ -64,7 +64,7 @@ async function analyzeProfile(data: WorkspaceData) {
   // 2) Otherwise extract from the pasted profile/resume text with the LLM.
   let analyzedVia: "ai" | "manual" = "manual";
   let analysis = fallbackProfileAnalysis(profile);
-  if (env.OPENAI_API_KEY && (profile.rawProfile.trim() || profile.manualInput.trim() || profile.headline.trim())) {
+  if (llmConfigured() && (profile.rawProfile.trim() || profile.manualInput.trim() || profile.headline.trim())) {
     try { analysis = await analyzeProfileWithOpenAI(profile); analyzedVia = "ai"; }
     catch { analysis = fallbackProfileAnalysis(profile); }
   }
@@ -76,7 +76,7 @@ async function analyzeProfile(data: WorkspaceData) {
 }
 
 async function analyzeProfileWithOpenAI(profile: WorkspaceData["individual"]) {
-  const text = await callOpenAI(
+  const text = await llmComplete(
     "You extract a structured professional summary from a person's own pasted LinkedIn profile or resume. Use ONLY what is given — never invent employers, titles, dates, or achievements. Return only valid JSON.",
     `Return JSON {role, experienceSummary (2-3 sentences on their career across companies), companies (array of employer names found)}. Headline: ${profile.headline}. Pasted profile/resume: ${profile.rawProfile || "(none)"}. Extra notes: ${profile.manualInput || "(none)"}.`,
   );
@@ -111,7 +111,7 @@ async function suggestThemes(data: WorkspaceData) {
   const trends = await fetchLinkedInTrends(individual ? data.individual.role : data.workspace.industry);
   let provider: "OpenAI" | "Built-in fallback" = "Built-in fallback";
   let themes = fallbackThemes(data, individual, insight, trends);
-  if (env.OPENAI_API_KEY) {
+  if (llmConfigured()) {
     try { themes = await suggestThemesWithOpenAI(data, individual, insight, trends); provider = "OpenAI"; }
     catch { themes = fallbackThemes(data, individual, insight, trends); }
   }
@@ -124,7 +124,7 @@ async function suggestThemes(data: WorkspaceData) {
 }
 
 async function suggestThemesWithOpenAI(data: WorkspaceData, individual: boolean, insight: ReturnType<typeof analyzePerformance>, trends: string[] | null): Promise<Theme[]> {
-  const text = await callOpenAI(
+  const text = await llmComplete(
     linkedinSystemPrompt("You propose content themes, each justified by what actually performs on LinkedIn. Return only valid JSON."),
     `Suggest exactly 5 themes as a JSON array. Each: name, description (one line), whatsWorking (one line naming the LinkedIn pattern/format that performs for this theme), score (60-99). ${sourceContext(data, individual)} ${insight.hasEnoughData ? `The account's own data: ${insight.summary} ${performanceHint(insight)}` : "No first-party performance yet — justify from proven LinkedIn patterns."} ${trends ? `Current trend signals: ${trends.join("; ")}.` : ""}`,
   );
@@ -191,7 +191,7 @@ async function buildPlan(data: WorkspaceData, input: { themeId?: string; days?: 
   const insight = analyzePerformance(data);
   let ideas: PlannedPost[] = [];
   let provider: "OpenAI" | "Built-in fallback" = "Built-in fallback";
-  if (env.OPENAI_API_KEY) {
+  if (llmConfigured()) {
     try { ideas = await planWithOpenAI(data, theme, days, individual, insight); provider = "OpenAI"; }
     catch { ideas = fallbackPlan(theme, days, individual); }
   } else {
@@ -216,7 +216,7 @@ type PlannedPost = { identity: Idea["identity"]; format: Post["format"]; body: s
 
 async function planWithOpenAI(data: WorkspaceData, theme: Theme, days: number, individual: boolean, insight: ReturnType<typeof analyzePerformance>): Promise<PlannedPost[]> {
   const count = days === 1 ? 1 : days === 3 ? 3 : 5;
-  const text = await callOpenAI(
+  const text = await llmComplete(
     linkedinSystemPrompt("You write finished, ready-to-post LinkedIn posts. Return only valid JSON."),
     `Write exactly ${count} distinct LinkedIn posts on ONE theme as a JSON array. Each object: identity (${individual ? "always Founder" : "Founder or Company"}), format (Text, Image, Document, or Multi-image), hook (the first line, under 210 chars), body (the full post, formatted with short lines and white space, hook as the first line, ending in one genuine question), hashtags (array of 3-5 specific tags, no # needed), cta. Theme: ${theme.name} — ${theme.description}. What's working: ${theme.whatsWorking}. ${formatGuidance("Text")} ${playbookContext()} ${sourceContext(data, individual)} ${performanceHint(insight)}`,
   );
@@ -290,7 +290,7 @@ function postFromPlanned(planned: PlannedPost, dayOffset: number, theme: Theme, 
 async function generateIdeasWithOpenAI(data: WorkspaceData, theme: string): Promise<Idea[]> {
   const individual = data.workspace.accountType === "Individual";
   const insight = analyzePerformance(data);
-  const text = await callOpenAI(
+  const text = await llmComplete(
     linkedinSystemPrompt("You propose distinct content ideas. Return only valid JSON."),
     `Create exactly 4 content ideas as a JSON array. Each: identity (${individual ? "always Founder" : "Founder or Company"}), format (Text, Image, Document, or Multi-image), hook (first line, <210 chars), angle, evidence, cta. Theme: ${theme}. ${playbookContext()} ${sourceContext(data, individual)} ${performanceHint(insight)} Blocked language: ${data.brief.banned.join("; ")}.`,
   );
@@ -330,7 +330,7 @@ async function reviseDraft(data: WorkspaceData, input: { postId?: string; note?:
   const note = (input.note ?? post.revisionNote ?? "Improve the draft.").slice(0, 500);
   let body = post.body;
   let provider: "OpenAI" | "Built-in fallback" = "Built-in fallback";
-  if (env.OPENAI_API_KEY) {
+  if (llmConfigured()) {
     try { body = await reviseWithOpenAI(data, post, note); provider = "OpenAI"; }
     catch { body = fallbackRevision(post.body, note); }
   } else {
@@ -348,7 +348,7 @@ async function reviseDraft(data: WorkspaceData, input: { postId?: string; note?:
 }
 
 async function reviseWithOpenAI(data: WorkspaceData, post: Post, note: string) {
-  const text = await callOpenAI(
+  const text = await llmComplete(
     linkedinSystemPrompt(`Keep the ${post.identity === "Founder" ? data.brief.founderVoice || "founder" : data.brief.companyVoice || "company"} voice. Return only the revised post text, no preamble.`),
     `Revise this LinkedIn draft per the request. ${playbookContext()} Reviewer's request: "${note}".\n\nDraft:\n${post.body}`,
   );
@@ -363,21 +363,4 @@ function fallbackRevision(body: string, note: string) {
     return paragraphs.slice(0, Math.max(1, Math.ceil(paragraphs.length / 2))).join("\n\n");
   }
   return body;
-}
-
-async function callOpenAI(systemPrompt: string, userPrompt: string) {
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: { authorization: `Bearer ${env.OPENAI_API_KEY}`, "content-type": "application/json" },
-    body: JSON.stringify({
-      model: env.OPENAI_MODEL ?? "gpt-5.4-mini",
-      input: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }],
-      max_output_tokens: 2200,
-    }),
-  });
-  if (!response.ok) throw new Error(`OpenAI request failed: ${response.status}`);
-  const result = await response.json() as { output?: { content?: { type?: string; text?: string }[] }[] };
-  const text = result.output?.flatMap(item => item.content ?? []).find(content => content.type === "output_text")?.text;
-  if (!text) throw new Error("No generated content returned");
-  return text;
 }

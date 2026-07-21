@@ -3,23 +3,15 @@ import { NextResponse } from "next/server";
 import { BuildPeriod, Idea, Post, Theme, WorkspaceData } from "../../../data";
 import { loadWorkspace, logEvent, saveWorkspace } from "../../../../lib/workspace";
 import { runQaChecks } from "../../../../lib/qa";
+import { formatGuidance, linkedinSystemPrompt, playbookContext, sourceContext } from "../../../../lib/linkedin-playbook";
+import { analyzePerformance, performanceHint } from "../../../../lib/linkedin-intel";
+import { enrichLinkedInProfile, fetchLinkedInTrends, profileProviderConfigured } from "../../../../lib/providers";
 
 export const dynamic = "force-dynamic";
 
 const IDENTITIES = ["Founder", "Company"];
 const FORMATS = ["Text", "Image", "Document", "Multi-image"];
 const THEME_COLORS = ["#3559e0", "#db6b3f", "#5f8c70", "#9a68b5", "#ad8c34"];
-
-// Proven, LinkedIn-native angle patterns. This is our compliant "what's working"
-// signal — editorial patterns plus the user's own first-party performance —
-// never scraped feeds or an unofficial trending API.
-const WORKING_ANGLES = [
-  "First-person point-of-view posts (a clear opinion + a lesson) consistently outperform announcements on LinkedIn.",
-  "\"Lesson learned\" and \"mistake I made\" hooks earn the highest save and comment rates for personal brands.",
-  "Practical frameworks and numbered checklists get saved and reshared far more than generic advice.",
-  "Short, specific stories with one concrete takeaway beat long thought-leadership essays.",
-  "Contrarian-but-defensible takes drive comments, which drive reach.",
-];
 
 type Mode = "ideas" | "revise" | "analyzeProfile" | "themes" | "buildPlan";
 
@@ -34,56 +26,59 @@ export async function POST(request: Request) {
 
   const selectedThemes = data.themes.filter(theme => theme.selected);
   const requestedTheme = selectedThemes.find(theme => theme.id === input.themeId) ?? selectedThemes[0];
+  const themeName = requestedTheme?.name ?? "Customer insight";
 
   let generated: Idea[];
   let provider: "OpenAI" | "Built-in fallback" = "Built-in fallback";
   if (env.OPENAI_API_KEY) {
-    try {
-      generated = await generateWithOpenAI(data, requestedTheme?.name ?? "Customer insight");
-      provider = "OpenAI";
-    } catch {
-      generated = fallbackIdeas(data, requestedTheme?.name ?? "Customer insight");
-    }
+    try { generated = await generateIdeasWithOpenAI(data, themeName); provider = "OpenAI"; }
+    catch { generated = fallbackIdeas(data, themeName); }
   } else {
-    generated = fallbackIdeas(data, requestedTheme?.name ?? "Customer insight");
+    generated = fallbackIdeas(data, themeName);
   }
-
   data.ideas = [...generated, ...data.ideas];
   await saveWorkspace(data);
   return NextResponse.json({ data, generated, provider });
 }
 
-// ---- Individual: analyse the connected LinkedIn profile into role + experience ----
+// ---- Individual: analyse the profile into role + experience across companies ----
 
 async function analyzeProfile(data: WorkspaceData) {
   if (data.workspace.accountType !== "Individual") {
     return NextResponse.json({ error: "Profile analysis is only for individual workspaces." }, { status: 409 });
   }
   const profile = data.individual;
-  if (!profile.linkedInUrl.trim()) {
-    return NextResponse.json({ error: "Add your LinkedIn profile URL first." }, { status: 400 });
+  if (!profile.linkedInUrl.trim() && !profile.rawProfile.trim()) {
+    return NextResponse.json({ error: "Add your LinkedIn URL, or paste your profile / resume text, first." }, { status: 400 });
   }
-  let provider: "OpenAI" | "Built-in fallback" = "Built-in fallback";
+
+  // 1) A configured compliant provider is the only way to enrich straight from a URL.
+  const enriched = await enrichLinkedInProfile(profile.linkedInUrl);
+  if (enriched) {
+    data.individual = { ...profile, fullName: enriched.fullName ?? profile.fullName, headline: enriched.headline ?? profile.headline, role: enriched.role ?? profile.role, experienceSummary: enriched.experienceSummary ?? profile.experienceSummary, companies: enriched.companies?.length ? enriched.companies : profile.companies, analyzedAt: new Date().toISOString(), analyzedVia: "provider" };
+    logEvent(data, "system", "Enriched LinkedIn profile via configured data provider.");
+    await saveWorkspace(data);
+    return NextResponse.json({ data, provider: "Data provider" });
+  }
+
+  // 2) Otherwise extract from the pasted profile/resume text with the LLM.
+  let analyzedVia: "ai" | "manual" = "manual";
   let analysis = fallbackProfileAnalysis(profile);
-  if (env.OPENAI_API_KEY && (profile.manualInput.trim() || profile.headline.trim())) {
-    try {
-      analysis = await analyzeProfileWithOpenAI(profile);
-      provider = "OpenAI";
-    } catch {
-      analysis = fallbackProfileAnalysis(profile);
-    }
+  if (env.OPENAI_API_KEY && (profile.rawProfile.trim() || profile.manualInput.trim() || profile.headline.trim())) {
+    try { analysis = await analyzeProfileWithOpenAI(profile); analyzedVia = "ai"; }
+    catch { analysis = fallbackProfileAnalysis(profile); }
   }
-  data.individual = { ...profile, ...analysis, analyzedAt: new Date().toISOString() };
+  data.individual = { ...profile, ...analysis, analyzedAt: new Date().toISOString(), analyzedVia };
   if (!data.workspace.name.trim() && analysis.fullName) data.workspace.name = analysis.fullName;
-  logEvent(data, "system", `Analysed LinkedIn profile (${provider}). Role: ${analysis.role}.`);
+  logEvent(data, "system", `Analysed profile (${analyzedVia === "ai" ? "AI from your pasted profile" : "manual"}). Role: ${analysis.role}.`);
   await saveWorkspace(data);
-  return NextResponse.json({ data, provider });
+  return NextResponse.json({ data, provider: analyzedVia === "ai" ? "OpenAI" : "Manual", providerConfigured: profileProviderConfigured() });
 }
 
 async function analyzeProfileWithOpenAI(profile: WorkspaceData["individual"]) {
   const text = await callOpenAI(
-    "You extract a professional summary from the details a person provides about their own LinkedIn profile. Never invent employers, titles, dates or achievements that are not given. Return only valid JSON.",
-    `Return a JSON object with role (their current primary role), experienceSummary (2-3 sentences on their career across companies), and companies (array of company names you can identify). Profile URL: ${profile.linkedInUrl}. Headline: ${profile.headline}. What they told us: ${profile.manualInput || "(nothing extra provided)"}.`,
+    "You extract a structured professional summary from a person's own pasted LinkedIn profile or resume. Use ONLY what is given — never invent employers, titles, dates, or achievements. Return only valid JSON.",
+    `Return JSON {role, experienceSummary (2-3 sentences on their career across companies), companies (array of employer names found)}. Headline: ${profile.headline}. Pasted profile/resume: ${profile.rawProfile || "(none)"}. Extra notes: ${profile.manualInput || "(none)"}.`,
   );
   const parsed = JSON.parse(text.replace(/^```json\s*/i, "").replace(/```$/i, "").trim()) as Record<string, unknown>;
   return {
@@ -96,49 +91,42 @@ async function analyzeProfileWithOpenAI(profile: WorkspaceData["individual"]) {
 }
 
 function fallbackProfileAnalysis(profile: WorkspaceData["individual"]) {
-  const role = profile.role || profile.headline || "Professional sharing lessons from their field";
+  // Pull likely company names out of pasted text: 1–2 capitalised words after "at"/"@",
+  // stopping at lowercase conjunctions, punctuation or digits.
+  const companies = [...new Set([...profile.rawProfile.matchAll(/(?:\bat|@)\s+([A-Z][A-Za-z0-9&.\-]+(?:\s[A-Z][A-Za-z0-9&.\-]+)?)/g)].map(m => m[1].replace(/\.\s.*$/, "").replace(/[.,]$/, "").trim()))].slice(0, 12);
   return {
-    role,
-    experienceSummary: profile.experienceSummary || (profile.manualInput ? profile.manualInput.slice(0, 800) : `Experience captured from ${profile.linkedInUrl}. Add manual notes to enrich this summary.`),
-    companies: profile.companies,
+    role: profile.role || profile.headline || "Professional sharing lessons from their field",
+    experienceSummary: profile.experienceSummary || (profile.rawProfile ? profile.rawProfile.slice(0, 600) : "Add your profile text or connect a data provider to enrich this."),
+    companies: companies.length ? companies : profile.companies,
     fullName: profile.fullName,
     headline: profile.headline,
   };
 }
 
-// ---- Theme suggestion grounded in the right source + "what's working" ----
+// ---- Theme suggestion: source + real first-party data + optional live trends ----
 
 async function suggestThemes(data: WorkspaceData) {
   const individual = data.workspace.accountType === "Individual";
+  const insight = analyzePerformance(data);
+  const trends = await fetchLinkedInTrends(individual ? data.individual.role : data.workspace.industry);
   let provider: "OpenAI" | "Built-in fallback" = "Built-in fallback";
-  let themes = fallbackThemes(data, individual);
+  let themes = fallbackThemes(data, individual, insight, trends);
   if (env.OPENAI_API_KEY) {
-    try {
-      themes = await suggestThemesWithOpenAI(data, individual);
-      provider = "OpenAI";
-    } catch {
-      themes = fallbackThemes(data, individual);
-    }
+    try { themes = await suggestThemesWithOpenAI(data, individual, insight, trends); provider = "OpenAI"; }
+    catch { themes = fallbackThemes(data, individual, insight, trends); }
   }
   data.themes = themes;
   data.workspace.strategyApproved = false;
-  logEvent(data, "system", `Suggested ${themes.length} themes from ${individual ? "your profile" : "your website and knowledge base"} + what's working on LinkedIn (${provider}).`);
+  const trendNote = trends ? " + live trend data" : "";
+  logEvent(data, "system", `Suggested ${themes.length} themes from ${individual ? "your profile" : "your business"}${insight.hasEnoughData ? " + your own performance" : ""}${trendNote} (${provider}).`);
   await saveWorkspace(data);
-  return NextResponse.json({ data, provider });
+  return NextResponse.json({ data, provider, usedFirstParty: insight.hasEnoughData, usedTrends: Boolean(trends) });
 }
 
-function sourceContext(data: WorkspaceData, individual: boolean) {
-  if (individual) {
-    const p = data.individual;
-    return `This person's role: ${p.role}. Experience: ${p.experienceSummary}. Companies: ${p.companies.join(", ") || "(unknown)"}. What they want to post about: ${p.manualInput || "(open)"}.`;
-  }
-  return `Business positioning: ${data.brief.positioning}. Audience: ${data.brief.audience}. Website: ${data.workspace.website}. ${knowledgeContext(data)}`;
-}
-
-async function suggestThemesWithOpenAI(data: WorkspaceData, individual: boolean): Promise<Theme[]> {
+async function suggestThemesWithOpenAI(data: WorkspaceData, individual: boolean, insight: ReturnType<typeof analyzePerformance>, trends: string[] | null): Promise<Theme[]> {
   const text = await callOpenAI(
-    "You are a LinkedIn content strategist. Suggest content themes grounded ONLY in the supplied source. For each theme also state what is currently working on LinkedIn that makes it a good bet, using well-known editorial patterns (point-of-view, lesson-learned, framework, teardown, contrarian take). Never invent facts. Return only valid JSON.",
-    `Suggest exactly 5 themes as a JSON array. Each object: name, description (one line), whatsWorking (one line on the LinkedIn pattern that performs for this theme), score (60-99 relevance). ${sourceContext(data, individual)}`,
+    linkedinSystemPrompt("You propose content themes, each justified by what actually performs on LinkedIn. Return only valid JSON."),
+    `Suggest exactly 5 themes as a JSON array. Each: name, description (one line), whatsWorking (one line naming the LinkedIn pattern/format that performs for this theme), score (60-99). ${sourceContext(data, individual)} ${insight.hasEnoughData ? `The account's own data: ${insight.summary} ${performanceHint(insight)}` : "No first-party performance yet — justify from proven LinkedIn patterns."} ${trends ? `Current trend signals: ${trends.join("; ")}.` : ""}`,
   );
   const parsed = JSON.parse(text.replace(/^```json\s*/i, "").replace(/```$/i, "").trim()) as Record<string, unknown>[];
   const valid = (Array.isArray(parsed) ? parsed : []).filter(item => typeof item.name === "string" && typeof item.description === "string");
@@ -147,7 +135,7 @@ async function suggestThemesWithOpenAI(data: WorkspaceData, individual: boolean)
     id: crypto.randomUUID(),
     name: (item.name as string).slice(0, 120),
     description: (item.description as string).slice(0, 300),
-    whatsWorking: typeof item.whatsWorking === "string" ? item.whatsWorking.slice(0, 300) : WORKING_ANGLES[index % WORKING_ANGLES.length],
+    whatsWorking: typeof item.whatsWorking === "string" ? item.whatsWorking.slice(0, 300) : whatsWorkingFor(index, insight, trends),
     score: typeof item.score === "number" ? Math.max(60, Math.min(99, Math.round(item.score))) : 90 - index * 3,
     selected: false,
     evidence: individual ? "Grounded in your role and experience" : "Grounded in your website and knowledge base",
@@ -156,7 +144,14 @@ async function suggestThemesWithOpenAI(data: WorkspaceData, individual: boolean)
   }));
 }
 
-function fallbackThemes(data: WorkspaceData, individual: boolean): Theme[] {
+function whatsWorkingFor(index: number, insight: ReturnType<typeof analyzePerformance>, trends: string[] | null) {
+  if (trends && trends[index]) return `Trending now: ${trends[index]}.`;
+  if (insight.hasEnoughData && insight.bestFormat) return `${insight.bestFormat} posts are performing best for you right now.`;
+  const patterns = ["Point-of-view posts with a clear opinion earn the most comments.", "Lesson/mistake hooks earn the highest save and comment rates.", "Frameworks and checklists get saved and reshared.", "Short, specific stories beat long essays.", "Contrarian-but-defensible takes drive comments, which drive reach."];
+  return patterns[index % patterns.length];
+}
+
+function fallbackThemes(data: WorkspaceData, individual: boolean, insight: ReturnType<typeof analyzePerformance>, trends: string[] | null): Theme[] {
   const seeds = individual
     ? [
         { name: "Lessons from the field", description: `Hard-earned lessons from ${data.individual.role || "your career"}.` },
@@ -176,7 +171,7 @@ function fallbackThemes(data: WorkspaceData, individual: boolean): Theme[] {
     id: crypto.randomUUID(),
     name: seed.name,
     description: seed.description,
-    whatsWorking: WORKING_ANGLES[index % WORKING_ANGLES.length],
+    whatsWorking: whatsWorkingFor(index, insight, trends),
     score: 92 - index * 4,
     selected: false,
     evidence: individual ? "Grounded in your role and experience" : "Grounded in your website and knowledge base",
@@ -185,7 +180,7 @@ function fallbackThemes(data: WorkspaceData, individual: boolean): Theme[] {
   }));
 }
 
-// ---- Build a 1 / 3 / 7-day content plan around a selected theme ----
+// ---- Build a 1 / 3 / 7-day plan around a selected theme ----
 
 async function buildPlan(data: WorkspaceData, input: { themeId?: string; days?: number }) {
   const days = ([1, 3, 7] as BuildPeriod[]).includes(input.days as BuildPeriod) ? input.days as BuildPeriod : 3;
@@ -193,23 +188,19 @@ async function buildPlan(data: WorkspaceData, input: { themeId?: string; days?: 
   if (!theme) return NextResponse.json({ error: "Select a theme before building content." }, { status: 409 });
 
   const individual = data.workspace.accountType === "Individual";
-  let ideas: Omit<Idea, "id" | "status">[] = [];
+  const insight = analyzePerformance(data);
+  let ideas: PlannedPost[] = [];
   let provider: "OpenAI" | "Built-in fallback" = "Built-in fallback";
   if (env.OPENAI_API_KEY) {
-    try {
-      ideas = await planWithOpenAI(data, theme, days, individual);
-      provider = "OpenAI";
-    } catch {
-      ideas = fallbackPlan(theme, days, individual);
-    }
+    try { ideas = await planWithOpenAI(data, theme, days, individual, insight); provider = "OpenAI"; }
+    catch { ideas = fallbackPlan(theme, days, individual); }
   } else {
     ideas = fallbackPlan(theme, days, individual);
   }
 
   const created: Post[] = [];
   for (let index = 0; index < ideas.length; index += 1) {
-    const idea = ideas[index];
-    const post = postFromIdea(idea, index, individual);
+    const post = postFromPlanned(ideas[index], index, theme, individual);
     const result = await runQaChecks(post, data);
     post.qa = result.qa;
     post.qaNotes = result.notes;
@@ -221,76 +212,115 @@ async function buildPlan(data: WorkspaceData, input: { themeId?: string; days?: 
   return NextResponse.json({ data, created: created.length, days, provider });
 }
 
-async function planWithOpenAI(data: WorkspaceData, theme: Theme, days: number, individual: boolean): Promise<Omit<Idea, "id" | "status">[]> {
+type PlannedPost = { identity: Idea["identity"]; format: Post["format"]; body: string; hashtags: string[]; cta: string; hook: string };
+
+async function planWithOpenAI(data: WorkspaceData, theme: Theme, days: number, individual: boolean, insight: ReturnType<typeof analyzePerformance>): Promise<PlannedPost[]> {
   const count = days === 1 ? 1 : days === 3 ? 3 : 5;
   const text = await callOpenAI(
-    "You are a LinkedIn content planner. Produce a coherent multi-post plan on one theme, each post distinct. Never invent facts. Return only valid JSON.",
-    `Return exactly ${count} posts as a JSON array. Each object: identity (${individual ? "always Founder" : "Founder or Company"}), format (Text, Image, Document, or Multi-image), hook, angle, evidence, cta. Theme: ${theme.name} — ${theme.description}. What's working: ${theme.whatsWorking}. ${sourceContext(data, individual)}`,
+    linkedinSystemPrompt("You write finished, ready-to-post LinkedIn posts. Return only valid JSON."),
+    `Write exactly ${count} distinct LinkedIn posts on ONE theme as a JSON array. Each object: identity (${individual ? "always Founder" : "Founder or Company"}), format (Text, Image, Document, or Multi-image), hook (the first line, under 210 chars), body (the full post, formatted with short lines and white space, hook as the first line, ending in one genuine question), hashtags (array of 3-5 specific tags, no # needed), cta. Theme: ${theme.name} — ${theme.description}. What's working: ${theme.whatsWorking}. ${formatGuidance("Text")} ${playbookContext()} ${sourceContext(data, individual)} ${performanceHint(insight)}`,
   );
   const parsed = JSON.parse(text.replace(/^```json\s*/i, "").replace(/```$/i, "").trim()) as Record<string, unknown>[];
-  const valid = (Array.isArray(parsed) ? parsed : []).filter(item => typeof item.hook === "string" && typeof item.angle === "string");
+  const valid = (Array.isArray(parsed) ? parsed : []).filter(item => typeof item.body === "string" && (item.body as string).length > 30);
   if (valid.length === 0) throw new Error("No valid plan returned");
   return valid.slice(0, count).map(item => ({
     identity: individual ? "Founder" : (IDENTITIES.includes(item.identity as string) ? item.identity as Idea["identity"] : "Founder"),
-    format: FORMATS.includes(item.format as string) ? item.format as Idea["format"] : "Text",
-    theme: theme.name,
-    hook: (item.hook as string).slice(0, 300),
-    angle: (item.angle as string).slice(0, 600),
-    evidence: typeof item.evidence === "string" ? item.evidence.slice(0, 400) : theme.evidence,
-    cta: typeof item.cta === "string" ? item.cta.slice(0, 300) : "Share your take in the comments.",
+    format: FORMATS.includes(item.format as string) ? item.format as Post["format"] : "Text",
+    hook: typeof item.hook === "string" ? item.hook.slice(0, 210) : (item.body as string).split("\n")[0].slice(0, 210),
+    body: (item.body as string).slice(0, 3000),
+    hashtags: Array.isArray(item.hashtags) ? item.hashtags.filter((t): t is string => typeof t === "string").slice(0, 5).map(t => t.startsWith("#") ? t : `#${t.replace(/\s+/g, "")}`) : [],
+    cta: typeof item.cta === "string" ? item.cta.slice(0, 200) : "What's your take?",
   }));
 }
 
-function fallbackPlan(theme: Theme, days: number, individual: boolean): Omit<Idea, "id" | "status">[] {
+function fallbackPlan(theme: Theme, days: number, individual: boolean): PlannedPost[] {
   const count = days === 1 ? 1 : days === 3 ? 3 : 5;
   const templates = [
-    { format: "Text" as const, hook: `The one thing most people get wrong about ${theme.name.toLowerCase()}`, angle: "Open with a specific, defensible point of view and one takeaway." },
-    { format: "Document" as const, hook: `${theme.name}: a practical checklist`, angle: "One diagnostic per page that the reader can act on." },
-    { format: "Text" as const, hook: `A lesson I learned about ${theme.name.toLowerCase()}`, angle: "Tell one specific story with a clear before/after." },
-    { format: "Image" as const, hook: `A simple test for ${theme.name.toLowerCase()}`, angle: "Pair a short point of view with a branded proof card." },
-    { format: "Text" as const, hook: `What changed how I think about ${theme.name.toLowerCase()}`, angle: "A contrarian-but-defensible take that invites discussion." },
+    { format: "Text" as const, hook: `Most people get ${theme.name.toLowerCase()} exactly backwards.`, angle: "Here's the version that actually holds up in practice — and the one mistake that makes it fall apart." },
+    { format: "Document" as const, hook: `${theme.name}, as a checklist you can actually use.`, angle: "One decision per page. If you can't answer it, that's the gap." },
+    { format: "Text" as const, hook: `A lesson about ${theme.name.toLowerCase()} I learned the hard way.`, angle: "One specific moment, what it cost, and what I'd do differently now." },
+    { format: "Image" as const, hook: `A simple test for ${theme.name.toLowerCase()}.`, angle: "If you can't explain the failure case, you don't have a plan yet." },
+    { format: "Text" as const, hook: `What changed how I think about ${theme.name.toLowerCase()}.`, angle: "A contrarian-but-defensible take, and why the default advice misleads people." },
   ];
-  return templates.slice(0, count).map((template, index) => ({
-    identity: individual ? "Founder" : (index % 3 === 1 ? "Company" : "Founder"),
+  return templates.slice(0, count).map((template) => ({
+    identity: individual ? "Founder" : (template.format === "Document" ? "Company" : "Founder"),
     format: template.format,
-    theme: theme.name,
     hook: template.hook,
-    angle: template.angle,
-    evidence: theme.whatsWorking ?? theme.evidence,
-    cta: "What is your experience? Share it in the comments.",
+    body: `${template.hook}\n\n${template.angle}\n\nThe short version: start where the evidence is clearest, not where it's loudest.\n\nWhat's the one thing you'd add here?`,
+    hashtags: hashtagsFor(theme.name),
+    cta: "What would you add?",
   }));
 }
 
-/** Turn a planned idea into a schedulable draft, one per day starting tomorrow at 09:00 UTC. */
-function postFromIdea(idea: Omit<Idea, "id" | "status">, dayOffset: number, individual: boolean): Post {
+function hashtagsFor(theme: string) {
+  const stop = new Set(["from", "the", "and", "for", "with", "your", "into", "that", "this", "how", "why", "what"]);
+  const base = theme.toLowerCase().replace(/[^a-z0-9 ]/g, "").split(/\s+/).filter(word => word.length > 3 && !stop.has(word)).slice(0, 2).map(word => `#${word}`);
+  return [...new Set([...base, "#LinkedIn", "#Leadership", "#Growth"])].slice(0, 4);
+}
+
+function postFromPlanned(planned: PlannedPost, dayOffset: number, theme: Theme, individual: boolean): Post {
   const slot = new Date();
   slot.setUTCDate(slot.getUTCDate() + dayOffset + 1);
   slot.setUTCHours(9, 0, 0, 0);
-  const body = `${idea.hook}\n\n${idea.angle}\n\n${idea.evidence}.\n\n${idea.cta}`;
   return {
     id: crypto.randomUUID(),
-    identity: individual ? "Founder" : idea.identity,
-    format: idea.format,
-    theme: idea.theme,
-    title: idea.hook,
-    hook: idea.hook,
-    body,
-    cta: idea.cta,
+    identity: individual ? "Founder" : planned.identity,
+    format: planned.format,
+    theme: theme.name,
+    title: planned.hook,
+    hook: planned.hook,
+    body: planned.body,
+    cta: planned.cta,
     status: "Needs approval",
     scheduledFor: slot.toISOString(),
-    why: `Part of your content plan for “${idea.theme}”. ${idea.evidence}.`,
-    hashtags: [],
-    altText: `${idea.format} post about ${idea.theme}.`,
-    creativeSlides: idea.format !== "Text" ? [
-      { heading: idea.hook, copy: idea.angle },
-      { heading: "01", copy: "Set up the problem" },
+    why: `Part of your ${theme.name} plan. What's working: ${theme.whatsWorking ?? "proven LinkedIn patterns"}.`,
+    hashtags: planned.hashtags,
+    altText: `${planned.format} post about ${theme.name}.`,
+    creativeSlides: planned.format !== "Text" ? [
+      { heading: planned.hook.slice(0, 60), copy: theme.description },
+      { heading: "01", copy: "Set up the real problem" },
       { heading: "02", copy: "Show the shift" },
-      { heading: "Next step", copy: idea.cta },
-    ].slice(0, idea.format === "Image" ? 1 : idea.format === "Multi-image" ? 3 : 4) : undefined,
+      { heading: "Next step", copy: planned.cta },
+    ].slice(0, planned.format === "Image" ? 1 : planned.format === "Multi-image" ? 3 : 4) : undefined,
   };
 }
 
-// ---- Existing idea + revision flows (unchanged behaviour) ----
+// ---- Idea generation (playbook-driven) + revision ----
+
+async function generateIdeasWithOpenAI(data: WorkspaceData, theme: string): Promise<Idea[]> {
+  const individual = data.workspace.accountType === "Individual";
+  const insight = analyzePerformance(data);
+  const text = await callOpenAI(
+    linkedinSystemPrompt("You propose distinct content ideas. Return only valid JSON."),
+    `Create exactly 4 content ideas as a JSON array. Each: identity (${individual ? "always Founder" : "Founder or Company"}), format (Text, Image, Document, or Multi-image), hook (first line, <210 chars), angle, evidence, cta. Theme: ${theme}. ${playbookContext()} ${sourceContext(data, individual)} ${performanceHint(insight)} Blocked language: ${data.brief.banned.join("; ")}.`,
+  );
+  const parsed = JSON.parse(text.replace(/^```json\s*/i, "").replace(/```$/i, "").trim()) as Record<string, unknown>[];
+  const valid = (Array.isArray(parsed) ? parsed : []).filter(item =>
+    FORMATS.includes(item.format as string) && typeof item.hook === "string" && typeof item.angle === "string" && typeof item.evidence === "string" && typeof item.cta === "string");
+  if (valid.length === 0) throw new Error("Model returned no valid ideas");
+  return valid.slice(0, 4).map(item => ({
+    id: crypto.randomUUID(),
+    identity: individual ? "Founder" : (IDENTITIES.includes(item.identity as string) ? item.identity as Idea["identity"] : "Founder"),
+    format: item.format as Idea["format"],
+    hook: (item.hook as string).slice(0, 300),
+    angle: (item.angle as string).slice(0, 600),
+    evidence: (item.evidence as string).slice(0, 400),
+    cta: (item.cta as string).slice(0, 300),
+    theme,
+    status: "Proposed" as const,
+  }));
+}
+
+function fallbackIdeas(data: WorkspaceData, theme: string): Idea[] {
+  const individual = data.workspace.accountType === "Individual";
+  const proof = data.brief.proof[0] ?? "your own experience";
+  return [
+    { id: crypto.randomUUID(), identity: "Founder", theme, format: "Text", hook: `The uncomfortable truth about ${theme.toLowerCase()}.`, angle: "One specific lesson, the assumption that was wrong, and what changed.", evidence: "Your approved voice and source", cta: "What assumption did you change recently?", status: "Proposed" },
+    { id: crypto.randomUUID(), identity: individual ? "Founder" : "Company", theme, format: "Document", hook: `${theme}: the checklist I wish I'd had.`, angle: "A diagnostic sequence, one action per page.", evidence: `Your source plus ${proof}`, cta: "Save it and score your current process.", status: "Proposed" },
+    { id: crypto.randomUUID(), identity: "Founder", theme, format: "Image", hook: `One question that reframes ${theme.toLowerCase()}.`, angle: "A concise point of view on a clean proof card.", evidence: "Selected theme and approved vocabulary", cta: "How would you answer it?", status: "Proposed" },
+    { id: crypto.randomUUID(), identity: individual ? "Founder" : "Company", theme, format: "Multi-image", hook: `From scattered signal to one decision.`, angle: "A before/process/after sequence.", evidence: "Approved positioning and proof", cta: "Want the full workflow?", status: "Proposed" },
+  ];
+}
 
 async function reviseDraft(data: WorkspaceData, input: { postId?: string; note?: string }) {
   const post = data.posts.find(item => item.id === input.postId);
@@ -301,12 +331,8 @@ async function reviseDraft(data: WorkspaceData, input: { postId?: string; note?:
   let body = post.body;
   let provider: "OpenAI" | "Built-in fallback" = "Built-in fallback";
   if (env.OPENAI_API_KEY) {
-    try {
-      body = await reviseWithOpenAI(data, post, note);
-      provider = "OpenAI";
-    } catch {
-      body = fallbackRevision(post.body, note);
-    }
+    try { body = await reviseWithOpenAI(data, post, note); provider = "OpenAI"; }
+    catch { body = fallbackRevision(post.body, note); }
   } else {
     body = fallbackRevision(post.body, note);
   }
@@ -321,61 +347,10 @@ async function reviseDraft(data: WorkspaceData, input: { postId?: string; note?:
   return NextResponse.json({ data, provider });
 }
 
-function knowledgeContext(data: WorkspaceData) {
-  const readable = data.sources.filter(source => source.readable && source.textPreview);
-  if (readable.length === 0) return "";
-  return `Knowledge sources (use only these facts, cite nothing else): ${readable.map(source => `[${source.name}] ${source.textPreview}`).join(" | ").slice(0, 2400)}.`;
-}
-
-async function callOpenAI(systemPrompt: string, userPrompt: string) {
-  const response = await fetch("https://api.openai.com/v1/responses", {
-    method: "POST",
-    headers: { "authorization": `Bearer ${env.OPENAI_API_KEY}`, "content-type": "application/json" },
-    body: JSON.stringify({
-      model: env.OPENAI_MODEL ?? "gpt-5.4-mini",
-      input: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: userPrompt },
-      ],
-      max_output_tokens: 1800,
-    }),
-  });
-  if (!response.ok) throw new Error(`OpenAI request failed: ${response.status}`);
-  const result = await response.json() as { output?: { content?: { type?: string; text?: string }[] }[] };
-  const text = result.output?.flatMap(item => item.content ?? []).find(content => content.type === "output_text")?.text;
-  if (!text) throw new Error("No generated content returned");
-  return text;
-}
-
-async function generateWithOpenAI(data: WorkspaceData, theme: string): Promise<Idea[]> {
-  const individual = data.workspace.accountType === "Individual";
-  const text = await callOpenAI(
-    "You are a LinkedIn content strategist. Return only valid JSON. Never invent customer facts, personal experiences, quotes, metrics, or trends. Use only the supplied source.",
-    `Create exactly 4 content ideas as a JSON array. Each object needs identity (${individual ? "always Founder" : "Founder or Company"}), format (Text, Image, Document, or Multi-image), hook, angle, evidence, and cta. Theme: ${theme}. ${sourceContext(data, individual)} Blocked language: ${data.brief.banned.join("; ")}.`,
-  );
-  const cleaned = text.replace(/^```json\s*/i, "").replace(/```$/i, "").trim();
-  const parsed = JSON.parse(cleaned) as Record<string, unknown>[];
-  const valid = (Array.isArray(parsed) ? parsed : []).filter(item =>
-    IDENTITIES.includes(item.identity as string) && FORMATS.includes(item.format as string) &&
-    typeof item.hook === "string" && typeof item.angle === "string" && typeof item.evidence === "string" && typeof item.cta === "string");
-  if (valid.length === 0) throw new Error("Model returned no valid ideas");
-  return valid.slice(0, 4).map(item => ({
-    id: crypto.randomUUID(),
-    identity: individual ? "Founder" : item.identity as Idea["identity"],
-    format: item.format as Idea["format"],
-    hook: (item.hook as string).slice(0, 300),
-    angle: (item.angle as string).slice(0, 600),
-    evidence: (item.evidence as string).slice(0, 400),
-    cta: (item.cta as string).slice(0, 300),
-    theme,
-    status: "Proposed" as const,
-  }));
-}
-
 async function reviseWithOpenAI(data: WorkspaceData, post: Post, note: string) {
   const text = await callOpenAI(
-    `You revise LinkedIn drafts. Keep the ${post.identity === "Founder" ? data.brief.founderVoice : data.brief.companyVoice} voice. Never invent facts. Blocked language: ${data.brief.banned.join("; ")}. Return only the revised post text, no preamble.`,
-    `Revise this draft. Reviewer's request: "${note}".\n\nDraft:\n${post.body}`,
+    linkedinSystemPrompt(`Keep the ${post.identity === "Founder" ? data.brief.founderVoice || "founder" : data.brief.companyVoice || "company"} voice. Return only the revised post text, no preamble.`),
+    `Revise this LinkedIn draft per the request. ${playbookContext()} Reviewer's request: "${note}".\n\nDraft:\n${post.body}`,
   );
   const cleaned = text.trim();
   if (cleaned.length < 20) throw new Error("Revision came back empty");
@@ -390,13 +365,19 @@ function fallbackRevision(body: string, note: string) {
   return body;
 }
 
-function fallbackIdeas(data: WorkspaceData, theme: string): Idea[] {
-  const individual = data.workspace.accountType === "Individual";
-  const proof = data.brief.proof[0] ?? "your approved evidence";
-  return [
-    { id: crypto.randomUUID(), identity: "Founder", theme, format: "Text", hook: `The uncomfortable lesson behind ${theme.toLowerCase()}`, angle: "Tell one specific operating lesson, the mistaken assumption, and what changed.", evidence: "Your approved voice and source", cta: "Ask peers what assumption they changed recently.", status: "Proposed" },
-    { id: crypto.randomUUID(), identity: individual ? "Founder" : "Company", theme, format: "Document", hook: `${theme}: a practical five-step field guide`, angle: "Turn the theme into a diagnostic sequence with one action per page.", evidence: `Your source plus ${proof}`, cta: "Invite readers to save the guide and score their current process.", status: "Proposed" },
-    { id: crypto.randomUUID(), identity: "Founder", theme, format: "Image", hook: `One question that changes how teams think about ${theme.toLowerCase()}`, angle: "Pair a concise point of view with a simple branded proof card.", evidence: "Selected theme and approved vocabulary", cta: "Ask readers to answer the question in comments.", status: "Proposed" },
-    { id: crypto.randomUUID(), identity: individual ? "Founder" : "Company", theme, format: "Multi-image", hook: `From scattered evidence to one decision`, angle: "Show a before/process/after sequence.", evidence: "Approved positioning and proof", cta: "Offer a closer look at the workflow.", status: "Proposed" },
-  ];
+async function callOpenAI(systemPrompt: string, userPrompt: string) {
+  const response = await fetch("https://api.openai.com/v1/responses", {
+    method: "POST",
+    headers: { authorization: `Bearer ${env.OPENAI_API_KEY}`, "content-type": "application/json" },
+    body: JSON.stringify({
+      model: env.OPENAI_MODEL ?? "gpt-5.4-mini",
+      input: [{ role: "system", content: systemPrompt }, { role: "user", content: userPrompt }],
+      max_output_tokens: 2200,
+    }),
+  });
+  if (!response.ok) throw new Error(`OpenAI request failed: ${response.status}`);
+  const result = await response.json() as { output?: { content?: { type?: string; text?: string }[] }[] };
+  const text = result.output?.flatMap(item => item.content ?? []).find(content => content.type === "output_text")?.text;
+  if (!text) throw new Error("No generated content returned");
+  return text;
 }

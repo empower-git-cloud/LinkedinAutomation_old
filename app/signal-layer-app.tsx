@@ -2,6 +2,7 @@
 
 import { ChangeEvent, FormEvent, useEffect, useState } from "react";
 import { ActivityEvent, Contact, Idea, Identity, Post, Theme, WorkspaceData, emptyWorkspace, formatDateTime, formatTime, sameLocalDay } from "./data";
+import { analyzePerformance } from "../lib/linkedin-intel";
 
 type Tab = "Overview" | "Strategy" | "Content" | "Calendar" | "Performance" | "Contacts" | "Knowledge" | "Settings";
 type ContentView = "Ideas" | "Drafts" | "Rejected";
@@ -353,15 +354,16 @@ function Performance({ data, timezone }: { data: WorkspaceData; timezone: string
     return { format, count: posts.length, rate: impressions > 0 ? (saves / impressions) * 100 : 0 };
   }).filter(stat => stat.count >= 2);
   const maxRate = Math.max(0.001, ...formatStats.map(stat => stat.rate));
-  const enoughForInsight = withMetrics.length >= 5 && formatStats.length >= 2;
+  // Real first-party intelligence — best format, best posting hour, hashtags that correlate with reach.
+  const insight = analyzePerformance(data);
   return (
     <div className="page-stack">
       <section className="section-intro"><div><span className="section-kicker">Performance</span><h2>Learn from patterns, not vanity metrics.</h2><p>Every result is tied back to its theme, format, voice and original hypothesis.</p></div></section>
       <section className="performance-hero panel"><div><span className="section-kicker">Weekly strategy review · Gate 4</span>
-        {enoughForInsight ? (
-          <><h3>{formatStats[0].format} posts lead on saves.</h3><p><b>Observed:</b> {formatStats[0].format.toLowerCase()} posts earn a {formatStats[0].rate.toFixed(1)}% save rate across {formatStats[0].count} posts — your strongest format so far. Based only on your real synced metrics.</p></>
+        {insight.hasEnoughData ? (
+          <><h3>What&apos;s working for you right now.</h3><p><b>Your data:</b> {insight.summary}</p>{insight.topHashtags.length > 0 && <p className="perf-tags"><b>Hashtags correlating with your reach:</b> {insight.topHashtags.map(h => h.tag).join(", ")}</p>}</>
         ) : (
-          <><h3>Not enough data for a review yet.</h3><p>The weekly review appears after at least five published posts with synced metrics — so every recommendation is backed by your real numbers, never invented ones.</p></>
+          <><h3>Not enough data for a review yet.</h3><p>{insight.summary}</p></>
         )}
       </div></section>
       <section className="performance-grid">
@@ -458,7 +460,7 @@ function OnboardingModal({ open, close, data, complete }: { open: boolean; close
     founderLinkedInUrl: data.workspace.founderLinkedInUrl, companyLinkedInUrl: data.workspace.companyLinkedInUrl,
     positioning: data.brief.positioning, audience: data.brief.audience,
     linkedInUrl: data.individual.linkedInUrl, fullName: data.individual.fullName, headline: data.individual.headline,
-    role: data.individual.role, manualInput: data.individual.manualInput,
+    role: data.individual.role, manualInput: data.individual.manualInput, rawProfile: data.individual.rawProfile,
   });
   if (!open) return null;
   const individual = accountType === "Individual";
@@ -479,7 +481,7 @@ function OnboardingModal({ open, close, data, complete }: { open: boolean; close
 
     {step === 3 && !individual && <div className="onboarding-form"><label>Positioning<textarea value={form.positioning} onChange={e => set("positioning", e.target.value)} /></label><label>Primary audience<textarea value={form.audience} onChange={e => set("audience", e.target.value)} /></label><div className="scan-note success"><b>Themes come next</b><p>We research trending themes from your website and knowledge base, then suggest 4–5 on the Strategy page.</p></div></div>}
 
-    {step === 3 && individual && <div className="onboarding-form"><label>Your role<input value={form.role} onChange={e => set("role", e.target.value)} placeholder="e.g. Product leader, 10 years in fintech" /></label><label>Anything specific you want to post about? <em className="opt">optional</em><textarea value={form.manualInput} onChange={e => set("manualInput", e.target.value)} placeholder="Optional. Topics, a recent win, a lesson, an opinion you want to share…" /></label><div className="scan-note success"><b>Themes come next</b><p>We analyse your role, experience and what’s working on LinkedIn, then suggest 4–5 themes on the Strategy page.</p></div></div>}
+    {step === 3 && individual && <div className="onboarding-form"><label>Your role<input value={form.role} onChange={e => set("role", e.target.value)} placeholder="e.g. Product leader, 10 years in fintech" /></label><label>Paste your LinkedIn profile or resume <em className="opt">recommended</em><textarea value={form.rawProfile} onChange={e => set("rawProfile", e.target.value)} placeholder="Open your LinkedIn profile → 'Save to PDF' or copy your About + Experience sections, and paste them here. We extract your role and experience across companies — no scraping." /></label><label>Anything specific you want to post about? <em className="opt">optional</em><textarea value={form.manualInput} onChange={e => set("manualInput", e.target.value)} placeholder="Optional. Topics, a recent win, a lesson, an opinion you want to share…" /></label><div className="scan-note success"><b>Themes come next</b><p>We analyse your role, experience and what’s working on LinkedIn, then suggest 4–5 themes on the Strategy page.</p></div></div>}
 
     {step === 4 && <div className="onboarding-form"><label>Timezone<input value={form.timezone} onChange={e => set("timezone", e.target.value)} /></label><div className="preference-cards"><div><b>Audience</b><span>{accountType}</span></div><div><b>Build periods</b><span>1 / 3 / 7 days</span></div><div><b>Approval</b><span>Everything requires approval</span></div></div></div>}
 

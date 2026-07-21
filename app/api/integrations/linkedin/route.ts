@@ -2,6 +2,7 @@ import { env } from "cloudflare:workers";
 import { NextResponse } from "next/server";
 import { getLinkedInConnection } from "../../../../lib/linkedin";
 import { getCurrentWorkspaceId, ensureWorkspaceTables } from "../../../../lib/workspace";
+import { llmConfig, llmConfigured } from "../../../../lib/llm";
 
 export const dynamic = "force-dynamic";
 
@@ -19,8 +20,8 @@ export async function GET() {
     scopes: connection?.scopes.split(" ").filter(Boolean) ?? [],
     expiresAt: connection?.expiresAt ?? null,
     apiVersion: env.LINKEDIN_API_VERSION ?? "202606",
-    openaiConfigured: Boolean(env.OPENAI_API_KEY),
-    openaiModel: env.OPENAI_MODEL ?? "gpt-5.4-mini",
+    openaiConfigured: llmConfigured(),
+    openaiModel: llmConfigured() ? llmConfig().model : "not configured",
   });
 }
 

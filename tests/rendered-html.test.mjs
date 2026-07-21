@@ -42,14 +42,18 @@ test("packages the platform persistence declarations", async () => {
 
 test("includes production agent and LinkedIn integration routes", async () => {
   const { readFile } = await import("node:fs/promises");
-  const [agent, oauth, publisher, crypto] = await Promise.all([
+  const [agent, llm, oauth, publisher, crypto] = await Promise.all([
     readFile(new URL("../app/api/agents/generate/route.ts", import.meta.url), "utf8"),
+    readFile(new URL("../lib/llm.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/integrations/linkedin/callback/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/api/integrations/linkedin/publish/route.ts", import.meta.url), "utf8"),
     readFile(new URL("../lib/token-crypto.ts", import.meta.url), "utf8"),
   ]);
-  assert.match(agent, /api\.openai\.com\/v1\/responses/);
+  // Provider-agnostic LLM client (OpenAI-compatible chat/completions; Groq/OpenAI/etc.).
+  assert.match(llm, /chat\/completions/);
+  assert.match(llm, /LLM_BASE_URL/);
   assert.match(agent, /Built-in fallback/);
+  assert.match(agent, /llmConfigured/);
   assert.match(oauth, /oauth\/v2\/accessToken/);
   assert.match(publisher, /Only approved and scheduled posts can publish/);
   assert.match(crypto, /AES-GCM/);

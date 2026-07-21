@@ -42,3 +42,7 @@ next-env.d.ts
 /.wrangler/
 /outputs/
 /work/
+
+# Local secrets for wrangler/vinext dev (never commit)
+.dev.vars
+.dev.vars.*

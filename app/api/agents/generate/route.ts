@@ -32,7 +32,7 @@ export async function POST(request: Request) {
   let provider: "OpenAI" | "Built-in fallback" = "Built-in fallback";
   if (llmConfigured()) {
     try { generated = await generateIdeasWithOpenAI(data, themeName); provider = "OpenAI"; }
-    catch { generated = fallbackIdeas(data, themeName); }
+    catch (error) { generated = fallbackIdeas(data, themeName); logEvent(data, "system", `AI idea generation fell back to templates: ${error instanceof Error ? error.message : "unknown error"}`); }
   } else {
     generated = fallbackIdeas(data, themeName);
   }
@@ -66,7 +66,7 @@ async function analyzeProfile(data: WorkspaceData) {
   let analysis = fallbackProfileAnalysis(profile);
   if (llmConfigured() && (profile.rawProfile.trim() || profile.manualInput.trim() || profile.headline.trim())) {
     try { analysis = await analyzeProfileWithOpenAI(profile); analyzedVia = "ai"; }
-    catch { analysis = fallbackProfileAnalysis(profile); }
+    catch (error) { analysis = fallbackProfileAnalysis(profile); logEvent(data, "system", `AI profile analysis fell back to manual: ${error instanceof Error ? error.message : "unknown error"}`); }
   }
   data.individual = { ...profile, ...analysis, analyzedAt: new Date().toISOString(), analyzedVia };
   if (!data.workspace.name.trim() && analysis.fullName) data.workspace.name = analysis.fullName;
@@ -113,7 +113,7 @@ async function suggestThemes(data: WorkspaceData) {
   let themes = fallbackThemes(data, individual, insight, trends);
   if (llmConfigured()) {
     try { themes = await suggestThemesWithOpenAI(data, individual, insight, trends); provider = "OpenAI"; }
-    catch { themes = fallbackThemes(data, individual, insight, trends); }
+    catch (error) { themes = fallbackThemes(data, individual, insight, trends); logEvent(data, "system", `AI theme suggestion fell back to templates: ${error instanceof Error ? error.message : "unknown error"}`); }
   }
   data.themes = themes;
   data.workspace.strategyApproved = false;
@@ -193,7 +193,7 @@ async function buildPlan(data: WorkspaceData, input: { themeId?: string; days?: 
   let provider: "OpenAI" | "Built-in fallback" = "Built-in fallback";
   if (llmConfigured()) {
     try { ideas = await planWithOpenAI(data, theme, days, individual, insight); provider = "OpenAI"; }
-    catch { ideas = fallbackPlan(theme, days, individual); }
+    catch (error) { ideas = fallbackPlan(theme, days, individual); logEvent(data, "system", `AI plan build fell back to templates: ${error instanceof Error ? error.message : "unknown error"}`); }
   } else {
     ideas = fallbackPlan(theme, days, individual);
   }
@@ -332,7 +332,7 @@ async function reviseDraft(data: WorkspaceData, input: { postId?: string; note?:
   let provider: "OpenAI" | "Built-in fallback" = "Built-in fallback";
   if (llmConfigured()) {
     try { body = await reviseWithOpenAI(data, post, note); provider = "OpenAI"; }
-    catch { body = fallbackRevision(post.body, note); }
+    catch (error) { body = fallbackRevision(post.body, note); logEvent(data, "system", `AI revision fell back: ${error instanceof Error ? error.message : "unknown error"}`); }
   } else {
     body = fallbackRevision(post.body, note);
   }
